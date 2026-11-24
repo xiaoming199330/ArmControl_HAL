@@ -1,0 +1,160 @@
+{
+  "_description": "sid/fi/zf 指令独立清单（从 arm_config.json 全量抽取）",
+  "_date": "2026-11-05",
+  "_firmware_tag": {
+    "both": "ARM-BOTH-0924CC",
+    "net": "ARM-NET-0924CC",
+    "can": "ARM-CAN-0918H",
+    "_note": "当前主用部署 fw0924cc_both_pp.bin (289,180B md5 ea0013d4...); 敲 `h` 首行即 fw-tag",
+    "_source_note": "本文件原从 arm_config.json 抽取(其 _firmware_tag 快照停在 0924BF 已过时), 此处修正为 0924CC"
+  },
+  "_source": "config/arm_config.json (144 条) -> 抽取 17 条",
+  "_groups": {
+    "sid": "改 ID/维修维护（总线 A 半双工，EEPROM 操作）",
+    "fi": "板内遥操主从跟随（0924BK~BT 链）",
+    "zf": "遥操桌面限位标定与开关（Flash 区 F）"
+  },
+  "_warnings": [
+    "sid baud 仅限单只舵机维修；总线波特率定格 1M 禁动",
+    "fi margin 已于 0924BZ 删除（保留条目仅作历史标注）",
+    "zf <数字> 已于 0924BX 删除，标定一律 zf here"
+  ],
+  "commands": [
+    {
+      "name": "fi",
+      "syntax": "[fi 0|1|2]",
+      "group": "Teleop",
+      "terminator": "\\r\\n",
+      "help": "板内遥操: 0=off 1=跟随 2=双臂角度监视(只读)",
+      "notes": "★新增 0924BK; fi 1=读主臂 Bus A ID7~12 -> 下发从臂 Bus B; 【修改 0924BT】误差驱动速度(实测→目标距离÷dt)+启动逐轴力矩校验; fi 2 每 300ms 打 M/S 两行"
+    },
+    {
+      "name": "fi diag",
+      "syntax": "[fi diag]",
+      "group": "Teleop",
+      "terminator": "\\r\\n",
+      "help": "遥操一屏判别快照",
+      "notes": "★新增 0924BT; 力矩 ON/OFF/主臂读数/夹后目标/从臂实际/err/spd/frames/rej/lost/clamp cnt/主臂零点 raw; 从臂不动先敲它"
+    },
+    {
+      "name": "fi spd",
+      "syntax": "[fi spd 0|1]",
+      "group": "Teleop",
+      "terminator": "\\r\\n",
+      "help": "比例跟随(速度直传)开关",
+      "notes": "★新增 0924BP; 1=速度按误差÷dt 计算, 0=固定速度"
+    },
+    {
+      "name": "fi acc",
+      "syntax": "[fi acc [0~254]]",
+      "group": "Teleop",
+      "terminator": "\\r\\n",
+      "help": "跟随轴加速度寄存器(addr41)查看/设置",
+      "notes": "★新增 0924BQ; fi 1 启动时写 254(满加速)"
+    },
+    {
+      "name": "fi margin",
+      "syntax": "(已删除)",
+      "group": "Teleop",
+      "terminator": "\\r\\n",
+      "help": "边界安全带(0924BS) —— 0924BZ 整体移除",
+      "notes": "✗删除 0924BZ; 用户明令遥操只受限位约束; 顶死风险靠 [STALL] 告警兜底"
+    },
+    {
+      "name": "zf here",
+      "syntax": "[zf here]",
+      "group": "Safety",
+      "terminator": "\\r\\n",
+      "help": "桌面下限实测标定: 爪尖摆到目标高度后敲",
+      "notes": "★新增 0924BW; 以当前实际位姿 FK z 为下限(吸收 FK 模型 ~10mm 系统性偏差); 读从臂 6 轴实际, 失败提示重试; 存 flash 区 F; 顺带 zf on"
+    },
+    {
+      "name": "zf on/off",
+      "syntax": "[zf on|off]",
+      "group": "Safety",
+      "terminator": "\\r\\n",
+      "help": "遥操/流控桌面限位开关",
+      "notes": "★新增 0924BV; 直通模式下唯一保留的桌面拦截(跳变/立柱/包线仍旁路); 存 flash 区 F"
+    },
+    {
+      "name": "zf clear",
+      "syntax": "[zf clear]",
+      "group": "Safety",
+      "terminator": "\\r\\n",
+      "help": "撤销桌面标定, 回折叠位推导",
+      "notes": "★保留 0924BV (原 0924AS); 存 flash"
+    },
+    {
+      "name": "zf <mm>",
+      "syntax": "(已删除)",
+      "group": "Safety",
+      "terminator": "\\r\\n",
+      "help": "数字设桌面下限 —— 0924BX 移除",
+      "notes": "✗删除 0924BX; FK 模型偏差 ~10mm, 数字值对不上实际离桌距离(设 5 实停 15), 标定一律 zf here; 敲数字会提示已移除"
+    },
+    {
+      "name": "sid",
+      "syntax": "[sid [scan|ping|info|set|lock|reset|baud]]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "STS3215 改 ID 维护工具 (走总线 A 半双工)",
+      "notes": "★补录 2026-11-05(命令 2026-10-23 已在固件); 不带参数=用法帮助"
+    },
+    {
+      "name": "sid scan",
+      "syntax": "[sid scan]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "双总线逐 ID 探测, 找出舵机所在总线与当前 ID",
+      "notes": "★补录; 改 ID 前先扫"
+    },
+    {
+      "name": "sid set",
+      "syntax": "[sid set <old> <new>]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "改舵机 ID (old->new, 自动定位所在总线)",
+      "notes": "★补录; ID 1~253(254=广播保留); 流程 TorqueOFF->EEPROM 解锁->写 ID->RESET 生效->重新上锁->验证; 连续同败先 sid lock <id> 0; 在线关节改 ID 前想清楚(改完可能失联)"
+    },
+    {
+      "name": "sid ping",
+      "syntax": "[sid ping <id>]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "探活指定 ID 舵机",
+      "notes": "★补录"
+    },
+    {
+      "name": "sid info",
+      "syntax": "[sid info <id>]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "读指定 ID 舵机信息",
+      "notes": "★补录"
+    },
+    {
+      "name": "sid lock",
+      "syntax": "[sid lock <id> <0|1>]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "EEPROM 手动解锁(0)/上锁(1)",
+      "notes": "★补录; sid set 连续失败时先 lock <id> 0 再 set"
+    },
+    {
+      "name": "sid reset",
+      "syntax": "[sid reset <id>]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "舵机内部重启/清错误",
+      "notes": "★补录; 稍后 sid ping 验证"
+    },
+    {
+      "name": "sid baud",
+      "syntax": "[sid baud <id> <bps>]",
+      "group": "Diag",
+      "terminator": "\\r\\n",
+      "help": "改单只舵机 EEPROM 波特率 (单只维修用)",
+      "notes": "★补录; ⚠ 铁律: 舵机总线波特率定格 1M 禁动, 本命令仅限单只舵机维修场景"
+    }
+  ]
+}

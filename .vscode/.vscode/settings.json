@@ -1,0 +1,26 @@
+{
+    "files.associations": {
+        "*.h": "c",
+        "*.c": "c"
+    },
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.intelliSenseMode": "gcc-arm",
+    "C_Cpp.errorSquiggles": "enabled",
+    "cortex-debug.openocdPath": "C:/STM32Tools/openocd/xpack-openocd-0.12.0-7/bin/openocd.exe",
+    "cortex-debug.armToolchainPath": "C:/STM32Tools/arm-gcc/bin",
+    "cortex-debug.variableUseNaturalFormat": true,
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "build/**/*.o": true,
+        "build/**/*.d": true
+    },
+    "search.exclude": {
+        "**/build": true,
+        "**/Drivers": true
+    },
+    "editor.formatOnSave": false,
+    "files.eol": "\n"
+}

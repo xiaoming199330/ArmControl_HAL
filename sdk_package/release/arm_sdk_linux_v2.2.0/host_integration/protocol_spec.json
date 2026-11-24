@@ -1,0 +1,879 @@
+{
+  "_": "由 tools/gen_protocol_spec.py 从 arm_sdk/protocol.py 自动生成 —— 不要手改。",
+  "meta": {
+    "sdk_version": "2.0.0",
+    "generator": "tools/gen_protocol_spec.py",
+    "command_count": 38
+  },
+  "transport": {
+    "kind": "udp",
+    "port": 5000,
+    "one_datagram_per_packet": true,
+    "packet_layout": [
+      {
+        "field": "SEQ",
+        "type": "u8",
+        "off": 0,
+        "note": "自增；回包原样带回，**必须按它匹配**（UDP 会乱序）"
+      },
+      {
+        "field": "CMD",
+        "type": "u8",
+        "off": 1,
+        "note": "命令码 < 0x80；≥ 0x80 是回包号段，固件不回"
+      },
+      {
+        "field": "LEN",
+        "type": "u8",
+        "off": 2,
+        "note": "**1 字节**（0~64），不是 u16"
+      },
+      {
+        "field": "PAYLOAD",
+        "type": "u8[LEN]",
+        "off": 3,
+        "note": ""
+      },
+      {
+        "field": "CRC",
+        "type": "u16le",
+        "off": "-2",
+        "note": "小端；范围 = 前 3+LEN 字节"
+      }
+    ],
+    "total_len_formula": "3 + LEN + 2",
+    "bad_packet_policy": "长度/CRC 不符 ⇒ 固件静默丢弃（只表现为超时）；若能看出 CMD 且 < 0x80 则回 NACK(err=2)"
+  },
+  "crc16": {
+    "name": "CRC-16/CCITT-FALSE",
+    "poly": 4129,
+    "init": 65535,
+    "reflect_in": false,
+    "reflect_out": false,
+    "xor_out": 0,
+    "check_vector": {
+      "input": "123456789",
+      "expect": "0x29B1"
+    },
+    "scope": "bytes[0 : 3+LEN]",
+    "endian": "little"
+  },
+  "error_codes": {
+    "0": {
+      "name": "OK",
+      "hint": "成功"
+    },
+    "1": {
+      "name": "PARAM",
+      "hint": "参数非法（量纲用错/越界/枚举无此值）"
+    },
+    "2": {
+      "name": "CRC",
+      "hint": "CRC 或长度错"
+    },
+    "3": {
+      "name": "UNREACH",
+      "hint": "IK 无解 / 目标不可达"
+    },
+    "4": {
+      "name": "LIMIT",
+      "hint": "越限（含单帧跳变 >25° 被整帧拒收）"
+    },
+    "5": {
+      "name": "ESTOP",
+      "hint": "急停生效"
+    },
+    "6": {
+      "name": "FK_VERIFY",
+      "hint": "上报位姿与正解不符（安全拒动）"
+    },
+    "7": {
+      "name": "READ",
+      "hint": "舵机读失败（有轴丢读）"
+    },
+    "8": {
+      "name": "MAGIC",
+      "hint": "危险命令缺/错 MAGIC"
+    },
+    "9": {
+      "name": "BUSY",
+      "hint": "轨迹/示教/回放进行中，此刻不受理"
+    },
+    "10": {
+      "name": "NOTCAL",
+      "hint": "未校准"
+    }
+  },
+  "ack_nack": {
+    "0x7F": "ACK（无载荷）",
+    "0x7E": "NACK（payload = [原cmd, err]）"
+  },
+  "commands": [
+    {
+      "code": 1,
+      "hex": "0x01",
+      "name": "PING",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_PING",
+        "code": 129,
+        "hex": "0x81"
+      },
+      "note": null
+    },
+    {
+      "code": 2,
+      "hex": "0x02",
+      "name": "GET_STATUS",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_STATUS",
+        "code": 130,
+        "hex": "0x82"
+      },
+      "note": "21 B；读失败轴 = -32768 哨兵"
+    },
+    {
+      "code": 3,
+      "hex": "0x03",
+      "name": "LOG_SET_LEVEL",
+      "group": "query",
+      "risk": "write",
+      "request": {
+        "builder": "payload_log_set_level",
+        "spec": "0x03 LOG_SET_LEVEL：u8 level 0~4（>4 按 4 处理）。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "level 0~4；越大越啰嗦，会占网口带宽"
+    },
+    {
+      "code": 4,
+      "hex": "0x04",
+      "name": "GET_JOINT_DETAIL",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": "payload_get_joint_detail",
+        "spec": "0x04 GET_JOINT_DETAIL：u8 joint（0~5，或 0xFF = 六轴）。"
+      },
+      "response": {
+        "name": "RSP_JOINT_DETAIL",
+        "code": 132,
+        "hex": "0x84"
+      },
+      "note": "每轴 10 B；温度/硬件错有 0xFF 丢读哨兵"
+    },
+    {
+      "code": 5,
+      "hex": "0x05",
+      "name": "GET_LIMITS",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_LIMITS",
+        "code": 133,
+        "hex": "0x85"
+      },
+      "note": "48 B = 6×8B(min,pos,max,zero，u16 raw)"
+    },
+    {
+      "code": 7,
+      "hex": "0x07",
+      "name": "GET_INFO",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_INFO",
+        "code": 135,
+        "hex": "0x87"
+      },
+      "note": "20 B；fw_tag + build + link + 参数个数"
+    },
+    {
+      "code": 10,
+      "hex": "0x0A",
+      "name": "GET_FLAGS",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_FLAGS",
+        "code": 138,
+        "hex": "0x8A"
+      },
+      "note": "2 B；不碰总线，可 10~50 Hz 轮询做心跳"
+    },
+    {
+      "code": 11,
+      "hex": "0x0B",
+      "name": "TEXT_EXEC",
+      "group": "text",
+      "risk": "motion",
+      "request": {
+        "builder": "payload_text_exec",
+        "spec": "0x0B TEXT_EXEC：u32 magic + 文本命令 + NUL。\n\n这是\"所有指令都支持网口下发\"的**那一把钥匙**：负载里就是一行 ASCII，\n固件走 COM11 上完全相同的 ProcessCommand，输出改道到内存再回传。\n\n⚠ 最长 58 个字符（TEXT_EXEC_MAX）。超长固件会钳断 —— 与其静默执行半条\n   命令（可能是完全不同的命令！），不如在这里就报错。\n⚠ 结尾的 CR/LF 会被剥掉；ProcessCommand 只吃一行内容。"
+      },
+      "response": {
+        "name": "RSP_TEXT_OUT",
+        "code": 139,
+        "hex": "0x8B"
+      },
+      "note": "★ 把整条控制台搬上网口；正文 ASCII + NUL，≤58 字符"
+    },
+    {
+      "code": 12,
+      "hex": "0x0C",
+      "name": "TEXT_FETCH",
+      "group": "text",
+      "risk": "read",
+      "request": {
+        "builder": "payload_text_fetch",
+        "spec": "0x0C TEXT_FETCH：u16 off + u8 n = 3 B。取上一条 TEXT_EXEC 输出的后续页。"
+      },
+      "response": {
+        "name": "RSP_TEXT_FETCH",
+        "code": 140,
+        "hex": "0x8C"
+      },
+      "note": "取 TEXT_EXEC 输出的后续页；u16 off + u8 n"
+    },
+    {
+      "code": 16,
+      "hex": "0x10",
+      "name": "MOVE_JOINTS",
+      "group": "motion",
+      "risk": "motion",
+      "request": {
+        "builder": "payload_move_joints",
+        "spec": "0x10 MOVE_JOINTS：6×i16 舵机度×10 + u16 速度×10 + u16 加速度×10  = 16 B。\n\n⚠ 角度是**舵机度 0~360**（不是逻辑角）。v/a 给 0 = 用臂内默认。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 绝对角，**舵机度**；v/a 是 u16×10"
+    },
+    {
+      "code": 17,
+      "hex": "0x11",
+      "name": "STOP",
+      "group": "motion",
+      "risk": "motion",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "随时可发，含 E-Stop 期间"
+    },
+    {
+      "code": 18,
+      "hex": "0x12",
+      "name": "SET_TORQUE",
+      "group": "motion",
+      "risk": "motion",
+      "request": {
+        "builder": "payload_set_torque",
+        "spec": "0x12 SET_TORQUE：u8 joint(0~5 或 0xFF=全部) + u8 enable。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "joint=0xFF 全部；掉力矩的臂必须先上力"
+    },
+    {
+      "code": 19,
+      "hex": "0x13",
+      "name": "STREAM_JOINTS",
+      "group": "motion",
+      "risk": "motion",
+      "request": {
+        "builder": "payload_stream_joints",
+        "spec": "0x13 STREAM_JOINTS：6×i16 **逻辑角**×10 = 12 B。\n\n⚠ 逻辑角 = 相对本臂 Home 零点、带符号；**不是**舵机度。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 50 Hz 流控，**逻辑角增量**；单帧单轴 >25° 整帧拒收"
+    },
+    {
+      "code": 20,
+      "hex": "0x14",
+      "name": "MOVE_JOINT_ONE",
+      "group": "motion",
+      "risk": "motion",
+      "request": {
+        "builder": "payload_move_joint_one",
+        "spec": "0x14 MOVE_JOINT_ONE：u8 joint(0~5) + i16 deg×10 + u16 v×10 + u16 a×10 = 7 B。\n\n⚠ 角度是**舵机度**，与 MOVE_JOINTS 同量纲（不是 STREAM_JOINTS 的逻辑角）。\n⚠ 固件会先读全场快照、只改这一轴目标 —— 任一轴丢读则整条命令回 ERR_READ\n  （拿不准位置时不动，比动错强）。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "单轴版 MOVE_JOINTS；任一轴丢读 ⇒ ERR_READ"
+    },
+    {
+      "code": 23,
+      "hex": "0x17",
+      "name": "SET_BUS_MODE",
+      "group": "config",
+      "risk": "write",
+      "request": {
+        "builder": "payload_set_bus_mode",
+        "spec": "0x17 SET_BUS_MODE：u8 mode（0=正常 A:AABBB / 1=全A / 2=全B）。\n\n⚠ 会改变 SetPositionsSync 的分组方式，调试用，别在生产路径里随手调。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "0=正常 1=全A 2=全B"
+    },
+    {
+      "code": 24,
+      "hex": "0x18",
+      "name": "SERVO_INIT",
+      "group": "config",
+      "risk": "write",
+      "request": {
+        "builder": "payload_servo_init",
+        "spec": "0x18 SERVO_INIT：u8 joint（0~5 或 0xFF=全部）。\n\n⚠ 会重写该轴 PID/限位/中位并 RESET，副作用与文本命令 `i` 相同。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "舵机初始化（会动！）"
+    },
+    {
+      "code": 32,
+      "hex": "0x20",
+      "name": "MOVE_CART",
+      "group": "motion",
+      "risk": "motion",
+      "request": {
+        "builder": "payload_move_cart",
+        "spec": "0x20 MOVE_CART：i16 x,y,z(mm×10) + i16 pitch(deg×10) + u16 v×10 + u16 a×10 = 12 B。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "12 B；坐标原点是夹爪中心 TCP；**会归零 J5/J6**"
+    },
+    {
+      "code": 33,
+      "hex": "0x21",
+      "name": "FK_QUERY",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_FK",
+        "code": 161,
+        "hex": "0xA1"
+      },
+      "note": "正解：X/Y/Z/pitch + 六轴舵机度 + read_ok"
+    },
+    {
+      "code": 34,
+      "hex": "0x22",
+      "name": "IK_QUERY",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": "payload_ik_query",
+        "spec": "0x22 IK_QUERY：i16 x,y,z(mm×10) + i16 pitch(deg×10) = 8 B。\n\n只解不算：固件做 IK 解算 + 关节限位检查 + FK 回代验证，但**不启动运动**。\n用于「先问能不能到，再决定动不动」—— 不可达/超限位/FK 超差分别回\nERR_UNREACH(3) / ERR_LIMIT(4) / ERR_FK_VERIFY(6)。"
+      },
+      "response": {
+        "name": "RSP_IK",
+        "code": null,
+        "hex": null
+      },
+      "note": "逆解；无解回 ERR_UNREACH，位姿不符回 ERR_FK_VERIFY"
+    },
+    {
+      "code": 48,
+      "hex": "0x30",
+      "name": "SET_GRAVITY",
+      "group": "config",
+      "risk": "write",
+      "request": {
+        "builder": "payload_set_gravity",
+        "spec": "0x30 SET_GRAVITY：i16 K(deg/mm ×1000)。⚠ 本项目 gc.k 现为占位，不影响普通运动。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "i16 K(×1000)；本项目 gc.k 为占位"
+    },
+    {
+      "code": 49,
+      "hex": "0x31",
+      "name": "SET_CORRECTION",
+      "group": "config",
+      "risk": "write",
+      "request": {
+        "builder": "payload_set_correction",
+        "spec": "0x31 SET_CORRECTION：u8 en + u16 thr(deg×100) + u8 rounds。三参数一次写全。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "重力补偿开关/阈值/轮数"
+    },
+    {
+      "code": 50,
+      "hex": "0x32",
+      "name": "GET_GRAVITY",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_GRAVITY",
+        "code": 178,
+        "hex": "0xB2"
+      },
+      "note": "读回 K"
+    },
+    {
+      "code": 51,
+      "hex": "0x33",
+      "name": "GET_CORRECTION",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_CORRECTION",
+        "code": 179,
+        "hex": "0xB3"
+      },
+      "note": "读回补偿配置"
+    },
+    {
+      "code": 54,
+      "hex": "0x36",
+      "name": "GET_PID",
+      "group": "query",
+      "risk": "read",
+      "request": {
+        "builder": "payload_get_pid",
+        "spec": "0x36 GET_PID：u8 joint（0~5）。"
+      },
+      "response": {
+        "name": "RSP_PID",
+        "code": 182,
+        "hex": "0xB6"
+      },
+      "note": "读某轴 PID(P,I,D)"
+    },
+    {
+      "code": 64,
+      "hex": "0x40",
+      "name": "PARAM_READ",
+      "group": "param",
+      "risk": "read",
+      "request": {
+        "builder": "payload_param_read",
+        "spec": "0x40 PARAM_READ：u8 id。"
+      },
+      "response": {
+        "name": "RSP_PARAM_READ",
+        "code": 192,
+        "hex": "0xC0"
+      },
+      "note": "u8 id → u8 id + i32(×1000)"
+    },
+    {
+      "code": 65,
+      "hex": "0x41",
+      "name": "PARAM_WRITE",
+      "group": "param",
+      "risk": "write",
+      "request": {
+        "builder": "payload_param_write",
+        "spec": "0x41 PARAM_WRITE：u8 id + i32 value×1000。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "改运行时参数（要 PARAM_SAVE 才落盘）"
+    },
+    {
+      "code": 66,
+      "hex": "0x42",
+      "name": "PARAM_COUNT",
+      "group": "param",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_PARAM_COUNT",
+        "code": 194,
+        "hex": "0xC2"
+      },
+      "note": "现役 24 项"
+    },
+    {
+      "code": 67,
+      "hex": "0x43",
+      "name": "PARAM_SAVE",
+      "group": "param",
+      "risk": "write",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 落 Flash；**必须带 MAGIC**；写扇区 11 区 A"
+    },
+    {
+      "code": 68,
+      "hex": "0x44",
+      "name": "PARAM_LIST",
+      "group": "param",
+      "risk": "read",
+      "request": {
+        "builder": "payload_param_list",
+        "spec": "0x44 PARAM_LIST：u8 offset（从第几条开始）。只给元数据，值用 PARAM_READ 取。"
+      },
+      "response": {
+        "name": "RSP_PARAM_LIST",
+        "code": 196,
+        "hex": "0xC4"
+      },
+      "note": "分页：每页 ≤6 条 ×10 B；vmin/vmax 是 i32"
+    },
+    {
+      "code": 80,
+      "hex": "0x50",
+      "name": "TEACH_LIST",
+      "group": "teach",
+      "risk": "read",
+      "request": {
+        "builder": "payload_teach_list",
+        "spec": "0x50 TEACH_LIST：u8 idx（第几个文件，0 基）。"
+      },
+      "response": {
+        "name": "RSP_TEACH_LIST",
+        "code": 208,
+        "hex": "0xD0"
+      },
+      "note": "示教文件枚举（有 tombstone 语义）"
+    },
+    {
+      "code": 81,
+      "hex": "0x51",
+      "name": "TEACH_READ",
+      "group": "teach",
+      "risk": "read",
+      "request": {
+        "builder": "payload_teach_read",
+        "spec": "0x51 TEACH_READ：u8 idx + u16 off + u8 n = 4 B。\n\n⚠ n 会被固件钳到 5（5×12 B = 60 ≤ 64 B 上限）。"
+      },
+      "response": {
+        "name": "RSP_TEACH_READ",
+        "code": 209,
+        "hex": "0xD1"
+      },
+      "note": "读采样点，每页 ≤5 点 ×12 B"
+    },
+    {
+      "code": 83,
+      "hex": "0x53",
+      "name": "TEACH_DELETE",
+      "group": "teach",
+      "risk": "write",
+      "request": {
+        "builder": "payload_teach_delete",
+        "spec": "0x53 TEACH_DELETE：u8 idx（写 tombstone，空间用 TEACH_COMPACT 回收）。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "删一个文件"
+    },
+    {
+      "code": 84,
+      "hex": "0x54",
+      "name": "TEACH_COMPACT",
+      "group": "teach",
+      "risk": "write",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "压实（回收 tombstone）"
+    },
+    {
+      "code": 85,
+      "hex": "0x55",
+      "name": "TEACH_TOTAL",
+      "group": "teach",
+      "risk": "read",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "RSP_TEACH_TOTAL",
+        "code": 213,
+        "hex": "0xD5"
+      },
+      "note": "容量/剩余空间统计"
+    },
+    {
+      "code": 112,
+      "hex": "0x70",
+      "name": "CENTER_CALIB",
+      "group": "danger",
+      "risk": "danger",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 六轴中位标定；**会废掉量纲基准**；必须 MAGIC"
+    },
+    {
+      "code": 113,
+      "hex": "0x71",
+      "name": "CALIB_ENTER",
+      "group": "danger",
+      "risk": "danger",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "NACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 交互式向导 ⇒ 网口下发**一律 NACK**（会死等本机键盘，且本工程无看门狗）"
+    },
+    {
+      "code": 114,
+      "hex": "0x72",
+      "name": "ZERO_RESET",
+      "group": "danger",
+      "risk": "danger",
+      "request": {
+        "builder": "payload_zero_reset",
+        "spec": "0x72 ZERO_RESET：u8 flags（bit0=1 同时落盘）+ u32 magic。\n\n⚠ 文本 `zr` **没有单轴变体**（一次复位全部六轴），所以这里也没有关节号 ——\n   不要按\"每关节重置\"来用。\n⚠ 会把 Home 零点重置回出厂中位（SERVO_OFFSET=180），量纲基准随之改变。\n   save=False 仅本次运行有效；save=True 等价 `zr save`（写 Flash 固化）。"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 清 Home 零点；flags bit0=是否落盘；**无关节号**（一次全六轴）"
+    },
+    {
+      "code": 115,
+      "hex": "0x73",
+      "name": "SYS_RESET",
+      "group": "danger",
+      "risk": "danger",
+      "request": {
+        "builder": null,
+        "spec": "无载荷（空 payload）"
+      },
+      "response": {
+        "name": "ACK",
+        "code": null,
+        "hex": null
+      },
+      "note": "★ 软复位；固件**延后到回包之后**执行，所以能收到 ACK"
+    }
+  ],
+  "constants": {
+    "MAX_PAYLOAD": 64,
+    "MAGIC": 1515870810,
+    "RAW_READ_FAIL": -32768,
+    "TEMP_LOST": 255,
+    "HWERR_LOST": 255,
+    "TEXT_BUF_SZ": 2048,
+    "TEXT_EXEC_MAX": 58,
+    "TEXT_CHUNK": 58,
+    "TEXT_FLAG_TRUNC": 1,
+    "TEXT_FLAG_GATE": 2,
+    "DETAIL_SIZE": 10,
+    "TEACH_READ_MAX": 5,
+    "TEACH_SAMPLE_SIZE": 12,
+    "PARAM_LIST_MAX": 6
+  },
+  "param_table": [
+    {
+      "id": 1,
+      "name": "ik.converge_mm"
+    },
+    {
+      "id": 2,
+      "name": "ik.max_iter"
+    },
+    {
+      "id": 3,
+      "name": "ik.fail_mm"
+    },
+    {
+      "id": 4,
+      "name": "ik.fk_verify_mm"
+    },
+    {
+      "id": 16,
+      "name": "sc.tj"
+    },
+    {
+      "id": 17,
+      "name": "sc.def_vmax"
+    },
+    {
+      "id": 18,
+      "name": "sc.def_accel"
+    },
+    {
+      "id": 19,
+      "name": "sc.v_min"
+    },
+    {
+      "id": 20,
+      "name": "sc.v_max"
+    },
+    {
+      "id": 21,
+      "name": "sc.accel_factor"
+    },
+    {
+      "id": 32,
+      "name": "gc.k"
+    },
+    {
+      "id": 33,
+      "name": "corr.enabled"
+    },
+    {
+      "id": 34,
+      "name": "corr.threshold"
+    },
+    {
+      "id": 35,
+      "name": "corr.max_rounds"
+    },
+    {
+      "id": 36,
+      "name": "corr.gain_j1"
+    },
+    {
+      "id": 37,
+      "name": "corr.gain_j2"
+    },
+    {
+      "id": 38,
+      "name": "corr.gain_j3"
+    },
+    {
+      "id": 39,
+      "name": "corr.gain_j4"
+    },
+    {
+      "id": 40,
+      "name": "corr.gain_j5"
+    },
+    {
+      "id": 41,
+      "name": "corr.gain_j6"
+    },
+    {
+      "id": 42,
+      "name": "traj.approach_speed"
+    },
+    {
+      "id": 43,
+      "name": "traj.approach_frac"
+    },
+    {
+      "id": 44,
+      "name": "servo.accel"
+    },
+    {
+      "id": 45,
+      "name": "traj.handoff_deg"
+    }
+  ],
+  "risk_levels": {
+    "read": "无副作用，可随时发",
+    "motion": "会动电机（流控/绝对角/单轴/笛卡尔）",
+    "write": "改配置或落 Flash，UI 上要二次确认",
+    "danger": "不可逆或会废掉量纲基准，**必须带 MAGIC**，UI 上要红字二次确认"
+  }
+}

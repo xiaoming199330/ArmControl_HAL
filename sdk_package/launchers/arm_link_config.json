@@ -1,0 +1,38 @@
+{
+  "_comment": "主从遥操 / 遥操示教 的**唯一配置入口**。改这个文件，不用改代码。以 _ 开头的键是注释，程序会忽略。所有字段都有内置默认值，缺项自动取默认。",
+  "_comment_addr": "地址写法：net://<IP>:5000 = 网口 UDP（首选，p50 1.61 ms）；serial://COM11 或 serial:///dev/ttyUSB0 = 串口；sim:// = 内存假臂（离线演练）。两臂的 IP 按现场实际填。",
+  "_comment_safety": "⚠ slew_deg_per_s 不要调到 400 以上：固件单帧单轴跳变 >25° 会**整帧拒收**，连续几次就自锁冻结。240°/s @50Hz = 4.8°/帧，留了 5× 余量。",
+
+  "leader": "net://192.168.7.121:5000",
+  "follower": "net://192.168.7.120:5000",
+  "timeout_s": 0.3,
+
+  "hz": 50.0,
+  "slew_deg_per_s": 240.0,
+  "gain": 1.0,
+  "sync": "hold",
+
+  "_comment_reverse": "false=全轴同向；true=全轴反向；也可以写 6 个布尔值，true 表示**这一轴**反向。镜像安装的从臂通常 J1/J4/J5/J6 要反。",
+  "reverse": [false, false, false, false, false, false],
+
+  "_comment_soft_limits": "6 组 [min,max]（**逻辑角**，度）。null = 不限。要按运行时限位收紧就填，例如 [[-20,20],[-20,20],[-20,20],[-20,20],[-70,70],[-33,33]]。",
+  "soft_limits_deg": null,
+
+  "enable_torque": true,
+
+  "_comment_serial": "串口路线才用（`relay` / 固件直连）。COM 号会漂移，插拔后请在设备管理器确认。",
+  "serial": {
+    "leader_port": "COM9",
+    "follower_port": "COM11",
+    "baud": 115200
+  },
+
+  "_comment_teach": "示教相关：out_dir 相对本文件所在目录；duration_s 是录/放时长；playback_speed 建议第一遍先 0.5。",
+  "teach": {
+    "out_dir": "trajectories",
+    "name": "demo",
+    "duration_s": 30.0,
+    "playback_speed": 0.5,
+    "playback_loop": 1
+  }
+}

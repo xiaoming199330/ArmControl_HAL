@@ -1,0 +1,2 @@
+[console_scripts]
+armctl = arm_sdk.cli:main

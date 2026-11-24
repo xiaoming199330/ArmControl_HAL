@@ -1,0 +1,393 @@
+{
+  "meta": {
+    "name": "ArmControl_HAL 六轴机械臂",
+    "source": "Core/Inc/kinematics.h + Core/Src/kinematics.c",
+    "generated": "2026-09-14",
+    "units": {
+      "length": "mm",
+      "angle": "deg"
+    },
+    "frame": {
+      "origin": "桌面上的 J1 轴心",
+      "x": "前 (forward)",
+      "y": "左 (left)",
+      "z": "上 (up)",
+      "zero_pose": "官方 Home：上臂自竖直前倾 +13.97°，前臂水平 +87.79°",
+      "pitch_convention": "0°=竖直向上, 90°=水平向前, 180°=竖直向下"
+    },
+    "validation": {
+      "method": "用 POSE_HOME_J 复算 FK，与实机 'f' 打印比对",
+      "PoseHomeJ": [
+        0.18,
+        -102.95,
+        93.54,
+        71.65,
+        -0.88,
+        -50.29
+      ],
+      "expected": {
+        "rho": 131.4,
+        "z": 3.98,
+        "pitch": 150.03
+      },
+      "computed": {
+        "rho": 131.39,
+        "z": 3.98,
+        "pitch": 150.03
+      },
+      "result": "一致（误差 < 0.01 mm）"
+    }
+  },
+  "servo": {
+    "model": "Feetech STS3215 (12V 30KG) 双轴 TTL 串行总线舵机",
+    "body_mm": {
+      "A_length": 45.2,
+      "B_thickness": 24.7,
+      "C_body": 35.0
+    },
+    "mesh_bbox_mm": {
+      "x": 45.4,
+      "y": 24.8,
+      "z": 39.6
+    },
+    "weight_g": 55,
+    "angle_range_raw": [
+      0,
+      4095
+    ],
+    "angle_range_deg": [
+      0.0,
+      360.0
+    ],
+    "raw_center": 2048,
+    "raw_per_deg": 11.375,
+    "deg_per_raw": 0.08791208791208792,
+    "horn_spline": "25T / OD 5.9 mm",
+    "bus": "半双工 TTL 串行总线, 1 Mbps (可 38400bps~1Mbps)",
+    "stall_torque_kgcm": 30,
+    "gear": "steel"
+  },
+  "kinematic_constants_mm": {
+    "ROBOT_BASE_H": 65.3,
+    "ROBOT_J2_OFF_Y": 31.32,
+    "ROBOT_J2_OFF_Z": 54.8,
+    "ROBOT_L_UPPER": 116.0,
+    "ROBOT_L_FORE": 135.0,
+    "ROBOT_L_WRIST": 62.5,
+    "ROBOT_L_TOOL": 105.3,
+    "ROBOT_L_DISTAL": 167.8,
+    "ARM_MAX_REACH": 418.8,
+    "ROBOT_PSI_UPPER0_deg": 13.9679662001558,
+    "ROBOT_PSI_FORE0_deg": 87.79248948295162,
+    "note": "J1->J2 平面内前向 31.32 / 向上 54.80；J2 轴高 120.10"
+  },
+  "joints": [
+    {
+      "index": 0,
+      "name": "shoulder_pan",
+      "cn": "底座水平旋转",
+      "type": "yaw",
+      "axis_world": [
+        0,
+        0,
+        1
+      ],
+      "axis_origin_mm": [
+        0.0,
+        0.0,
+        65.3
+      ],
+      "dir": -1.0,
+      "limits_deg": [
+        -180.0,
+        180.0
+      ],
+      "note": "绕竖直 Z；0=朝 +X(前)，正向=朝 +Y(左)"
+    },
+    {
+      "index": 1,
+      "name": "shoulder_lift",
+      "cn": "肩",
+      "type": "pitch",
+      "axis_world": [
+        0,
+        1,
+        0
+      ],
+      "axis_origin_mm": [
+        31.32,
+        0.0,
+        120.1
+      ],
+      "dir": 1.0,
+      "limits_deg": [
+        -122.0,
+        84.0
+      ],
+      "note": "绕 Y；正向=上臂向前倾"
+    },
+    {
+      "index": 2,
+      "name": "elbow_flex",
+      "cn": "肘",
+      "type": "pitch",
+      "axis_world": [
+        0,
+        1,
+        0
+      ],
+      "axis_origin_mm": [
+        59.32000692661807,
+        0.0,
+        232.66997651287548
+      ],
+      "dir": 1.0,
+      "limits_deg": [
+        -102.24175824175823,
+        95.82417582417582
+      ],
+      "note": "绕 Y；限位由写死偏移给出(权威)，非标定极值"
+    },
+    {
+      "index": 3,
+      "name": "wrist_flex",
+      "cn": "腕俯仰",
+      "type": "pitch",
+      "axis_world": [
+        0,
+        1,
+        0
+      ],
+      "axis_origin_mm": [
+        194.21982016322852,
+        0.0,
+        237.8700138903969
+      ],
+      "dir": 1.0,
+      "limits_deg": [
+        -97.0,
+        109.0
+      ],
+      "note": "绕 Y"
+    },
+    {
+      "index": 4,
+      "name": "wrist_roll",
+      "cn": "腕自转",
+      "type": "roll",
+      "axis_world": [
+        0.999257,
+        0.0,
+        0.038573
+      ],
+      "axis_origin_mm": [
+        256.67343740240005,
+        0.0,
+        240.27743860221238
+      ],
+      "dir": 1.0,
+      "limits_deg": [
+        -90.8131868131868,
+        69.1868131868132
+      ],
+      "note": "绕工具轴(零位时 psi=87.79°)；不改变末端位置；限位由写死偏移给出"
+    },
+    {
+      "index": 5,
+      "name": "gripper",
+      "cn": "夹爪开合",
+      "type": "revolute",
+      "axis_world": [
+        0,
+        1,
+        0
+      ],
+      "axis_origin_mm": [
+        361.8952917269562,
+        0.0,
+        244.3334677566791
+      ],
+      "dir": 1.0,
+      "limits_deg": [
+        -180.0,
+        180.0
+      ],
+      "note": "不改变 TCP 位置；驱动夹爪张开/闭合"
+    }
+  ],
+  "axis_chain_zero_pose_mm": {
+    "J1_axis": [
+      0.0,
+      0.0,
+      65.3
+    ],
+    "J2_axis": [
+      31.32,
+      0.0,
+      120.1
+    ],
+    "J3_axis": [
+      59.32000692661807,
+      0.0,
+      232.66997651287548
+    ],
+    "J4_axis": [
+      194.21982016322852,
+      0.0,
+      237.8700138903969
+    ],
+    "J5_axis": [
+      256.67343740240005,
+      0.0,
+      240.27743860221238
+    ],
+    "TCP": [
+      361.8952917269562,
+      0.0,
+      244.3334677566791
+    ]
+  },
+  "link_lengths_mm": [
+    {
+      "from": "J1_axis",
+      "to": "J2_axis",
+      "length": 63.1187959327489,
+      "components": {
+        "forward": 31.32,
+        "up": 54.8
+      }
+    },
+    {
+      "from": "J2_axis",
+      "to": "J3_axis",
+      "length": 116.0,
+      "name": "上臂"
+    },
+    {
+      "from": "J3_axis",
+      "to": "J4_axis",
+      "length": 135.0,
+      "name": "前臂"
+    },
+    {
+      "from": "J4_axis",
+      "to": "J5_axis",
+      "length": 62.5,
+      "name": "腕"
+    },
+    {
+      "from": "J5_axis",
+      "to": "TCP",
+      "length": 105.3,
+      "name": "工具/夹爪"
+    },
+    {
+      "from": "J4_axis",
+      "to": "TCP",
+      "length": 167.8,
+      "name": "J4->TCP 合计"
+    }
+  ],
+  "mesh_bbox_mm": {
+    "_comment": "官方 STL 实测包围盒(单位 mm)，供高保真建模参考",
+    "base_so101_v2.stl": [
+      110.92,
+      72.0,
+      87.0
+    ],
+    "motor_holder_so101_base_v1.stl": [
+      28.0,
+      38.1,
+      55.08
+    ],
+    "motor_holder_so101_wrist_v1.stl": [
+      28.0,
+      36.9,
+      56.39
+    ],
+    "moving_jaw_so101_v1.stl": [
+      22.3,
+      91.99,
+      48.0
+    ],
+    "rotation_pitch_so101_v1.stl": [
+      59.8,
+      84.2,
+      46.0
+    ],
+    "sts3215_03a_v1.stl": [
+      45.4,
+      24.8,
+      39.6
+    ],
+    "under_arm_so101_v1.stl": [
+      130.7,
+      24.0,
+      64.4
+    ],
+    "upper_arm_so101_v1.stl": [
+      142.17,
+      24.5,
+      67.3
+    ],
+    "wrist_roll_follower_so101_v1.stl": [
+      65.2,
+      52.0,
+      105.43
+    ],
+    "wrist_roll_pitch_so101_v2.stl": [
+      62.3,
+      35.66,
+      77.83
+    ]
+  },
+  "poses_joint_deg": {
+    "_comment": "预设位姿，关节角(相对 Home)，完整来自 main.c POSE_*_J",
+    "HOME  (折叠收纳)": [
+      0.18,
+      -102.95,
+      93.54,
+      71.65,
+      -0.88,
+      -50.29
+    ],
+    "FOLD  (备用收拢)": [
+      0,
+      40,
+      -70,
+      40,
+      0,
+      0
+    ],
+    "READY (前伸待命)": [
+      0,
+      0,
+      -30,
+      40,
+      0,
+      0
+    ],
+    "WAVE1 (高举 A)": [
+      45,
+      -30,
+      -80,
+      50,
+      0,
+      0
+    ],
+    "WAVE2 (高举 B)": [
+      -45,
+      -30,
+      -80,
+      50,
+      0,
+      0
+    ]
+  },
+  "notes": [
+    "URDF 关节限位：J1/J2/J4/J6 为固件默认显示值换算的近似；J3/J5 为写死偏移(权威)。",
+    "上位机应以设备实测为准：'L' 命令读取限位，'p J'/'s' 读取 raw。",
+    "官方 so101_new_calib.urdf 与固件模型在 J4->TCP 上有 ~5.6mm 差异（固件为 167.80）。",
+    "固件模型偏保守约 6mm（折叠位模型 z=3.98 而实测爪尖离桌 10mm）。"
+  ]
+}

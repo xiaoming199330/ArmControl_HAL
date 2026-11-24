@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ======================================================================
+       C# 参考实现的冒烟测试工程。
+       不装任何 NuGet 包 —— 纯 BCL（System.Net.Sockets）。
+
+       跑法（需要 .NET SDK 6.0+）：
+           cd host_integration/csharp
+           dotnet run -- 127.0.0.1          # 对着本机的假臂服务跑
+           dotnet run -- 192.168.7.120      # 对着真机跑
+
+       另一个终端先起假臂（不需要真机）：
+           armctl mock --port 5000 --verbose
+
+       ⚠ 用 .NET Framework 的 WinForm/WPF 工程时**不要**引用这个 csproj，
+         直接把 ArmLink.cs 拖进你的工程即可（它只用了 BCL，Framework 4.5+ 都能编）。
+       ====================================================================== -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>ArmLinkDemo</AssemblyName>
+    <RootNamespace>ArmSdk</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>8.0</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="bin/**" />
+    <Compile Remove="obj/**" />
+  </ItemGroup>
+
+</Project>

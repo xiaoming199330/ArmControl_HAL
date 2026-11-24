@@ -1,0 +1,43 @@
+{
+    "version": 2,
+    "configurations": [
+        {
+            "name": "STM32 Debug (ST-Link + OpenOCD)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/${workspaceFolderBasename}.elf",
+            "servertype": "openocd",
+            "device": "STM32F407ZG",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32f4x.cfg"
+            ],
+            "searchDir": [
+                "C:/STM32Tools/openocd/xpack-openocd-0.12.0-7/scripts"
+            ],
+            "svdFile": "",
+            "runToEntryPoint": "main",
+            "showDevDebugOutput": "none",
+            "preLaunchTask": "Build"
+        },
+        {
+            "name": "STM32 Debug (ST-Link + OpenOCD, no build)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/${workspaceFolderBasename}.elf",
+            "servertype": "openocd",
+            "device": "STM32F407ZG",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32f4x.cfg"
+            ],
+            "searchDir": [
+                "C:/STM32Tools/openocd/xpack-openocd-0.12.0-7/scripts"
+            ],
+            "runToEntryPoint": "main",
+            "showDevDebugOutput": "none"
+        }
+    ]
+}

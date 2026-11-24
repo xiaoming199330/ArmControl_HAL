@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arm-sdk"
+version = "2.2.0"
+description = "六轴机械臂（STM32F407 + Feetech STS3215×6）上位机 SDK：网口/串口/CAN 三链路 + 主从遥操 + 遥操示教"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Proprietary" }
+authors = [{ name = "ArmControl_HAL" }]
+keywords = ["robotics", "robot-arm", "stm32", "sts3215", "teleoperation", "udp", "can"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: Scientific/Engineering :: Robotics",
+  "Intended Audience :: Developers",
+]
+# 核心零依赖：纯标准库即可跑网口 / 模拟器 / 遥操 / 示教
+dependencies = []
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]        # 串口链路 + 文本控制台
+can = ["python-can>=4.0"]         # 直接驱动 USB-CAN 适配器（不走板子）
+numpy = ["numpy>=1.20"]           # 轨迹 .npz 导入导出
+all = ["pyserial>=3.5", "python-can>=4.0", "numpy>=1.20"]
+
+[project.scripts]
+armctl = "arm_sdk.cli:main"
+
+[project.urls]
+Documentation = "https://example.invalid/arm_sdk/docs"
+
+[tool.setuptools]
+packages = ["arm_sdk"]
+# 让 pip 安装后也能找到配置镜像（cli.info / 上位机做能力查询用）
+include-package-data = true
+
+[tool.setuptools.package-data]
+arm_sdk = ["arm_config.json"]

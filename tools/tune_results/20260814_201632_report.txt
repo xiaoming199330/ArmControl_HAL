@@ -1,0 +1,11 @@
+
+===== 采样 corr_test | PID[current] | 耗时 30.21s =====
+  [警告] 未检测到修正完成/停止 → 修正可能未触发（常见：舵机位置读取失败使 m 轨迹中止）
+  J  修正轮  实际到位  误差  有反馈  状态   auto-tune
+  J1    0      164.2      0.8     97次  feedback   0
+  J2    0      165.6     -4.6     89次  feedback   0
+  J3    0      169.5      0.5     70次  feedback   0
+  J4    0      181.2      0.8     71次  feedback   0
+  J5    0      155.1     -0.1     78次  feedback   0
+  J6    0      199.4      0.6     80次  feedback   0
+    数据: tune_results\20260814_201632_corr_test.csv

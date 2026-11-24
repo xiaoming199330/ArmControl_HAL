@@ -1,0 +1,99 @@
+arm_sdk_dev_v2.2.0  —  文件清单与校验和
+生成(UTC): 2026-09-30 07:36:58
+====================================================================================================
+
+[必需] arm_sdk/（14 个文件）                                       554.6 KB  ★ SDK 源码。分层：protocol.py（逻辑包编解码）→ transport.py（UDP/串口/CAN）→ client.py（ArmClient）；teleop / teach / kinematics / console / sim / cli。另含 `mock_server.py`（假臂，无真机联调）与 `http_bridge.py`（HTTP↔UDP 边车，`armctl http-bridge`）
+[必需] dist/arm_sdk-2.2.0-py3-none-any.whl                    185.9 KB  ★ 预构建 wheel（py3-none-any）—— Linux 上直接 pip install，免编译
+[必需] pyproject.toml                                           1.4 KB  ★ pip 安装声明（console_scripts: armctl）；`pip install -e .` 走它
+[必需] README.md                                               15.8 KB  ★ SDK 总说明（30 秒上手 / 10 个坑 / 自检表）
+[必需] js/（28 个文件）                                            447.4 KB  ★ JS SDK（零依赖，Node ≥ 18）：Node 原生 UDP + 浏览器 Web Serial + bridge.js 边车；与 Python 版逐字节一致（跨语言对拍 404 项）
+[必需] config/arm_config.json                                 111.3 KB  ★ 接口契约（114 文本命令 + 38 网口命令 + 40 章节）。**参数不要硬编码，从这里读**
+[必需] tests/（2 个文件）                                           22.8 KB  ★ 离线端到端验收测试（integration_test 51 + new_commands_test 62 断言；无 numpy 时少 1 项（.npz 往返），会打印跳过）
+[必需] docs/配置文件说明.md                                          12.9 KB  ★【配置文件】两个 JSON 的分工与全字段：`config/arm_config.json`（只读接口契约，39 节）vs `launchers/arm_link_config.json`（你要改的部署配置）；含「改完怎么验」与三处非 JSON 配置
+[必需] docs/网口协议速查.md                                          19.9 KB  ★【网口协议】字段级速查（14 章 / 463 行）—— 第一优先级，先看这份
+[必需] docs/网口指令大全.md                                          70.9 KB  ★【网口协议】全量版（1419 行）：38 条命令（14 基础 + 24 扩展）逐条详解 + TEXT_EXEC 文本透传 + 故障对照表 + 13 条网口红线
+[必需] docs/网口下发操作手册.md                                        11.3 KB  ★【网口上手】操作步骤在前（探活→观测→运动→收工）+ armctl 全量命令注释 + 真实回传样例注解——拿到包先看这份再动臂
+[必需] docs/串口下发操作手册.md                                         8.7 KB  ★【串口上手】screen 控制台：操作步骤在前（判活→状态→运动）+ 固件原生命令注释 + 真机 cprint 格式回显注解
+[必需] docs/主从遥操与示教.md                                         10.6 KB  ★ 主从遥操与遥操示教：选型、参数、排查
+[必需] docs/UDP_vs_HTTP_实测.md                                  22.5 KB  ★【链路选型】UDP vs HTTP 的速率/延迟/丢包对照：为什么板子没 TCP、HTTP 边车多付多少、板侧 nx 差分测真丢包的方法、以及「遥操走 UDP / 配置走 HTTP」的结论
+[必需] host_integration/（7 个文件）                               129.4 KB  ★★【上位机对接】场景→发哪条指令决策表（502 行）+ 自动生成的协议规格 JSON（38 条命令）+ 三份参考实现（C 头文件 / C# ArmLink / 零依赖 Python 独立实现）+ 假臂联调用法
+[必需] launchers/（12 个文件）                                      55.4 KB  ★★【一键启动】主从遥操 / 遥操示教启动器（6 步打印 + 预检 + 安全闸门）+ 唯一配置入口 arm_link_config.json + Windows/Linux 启动脚本 + 《启动步骤.md》；带 --preflight-only 只读预检
+[必需] examples/（7 个文件）                                        21.4 KB  7 个可运行示例（01~07，含 sim 无硬件版）—— 写代码的样板
+[可选] model/（16 个文件）                                          15.4 MB  URDF + link_geometry.json + 15 个 STL（15.4 MB）—— 上位机做 **3D 显示 / IK 校验**才要。只做协议通讯不用它
+[可选] docs/reference/01_ARCHITECTURE(系统总体架构).md               19.9 KB  系统总体架构
+[可选] docs/reference/02_MECHANICAL(机械臂尺寸与运动学).md              16.5 KB  机械尺寸 + 运动学（画 3D / 算 IK 用）
+[可选] docs/reference/03_INTERFACE(详细接口数据).md                  28.1 KB  详细接口数据（串口文本命令全表 + 寄存器 + 二进制协议）
+[可选] docs/reference/04_SDK_SPEC(SDK规格书).md                   26.1 KB  串口控制台 SDK 规格书 ⚠ §6「主从臂不在范围」已被 v2 取代
+[可选] docs/reference/05_HOST_APP_REQUIREMENTS(上位机功能要求与验收标准).md    20.3 KB  ★ 上位机**功能范围与验收标准** —— 开发方的需求依据
+[可选] docs/reference/06_AI_BRIEF(上位机任务书).md                    9.7 KB  上位机任务书（交给 AI 做上位机时的输入）
+[可选] docs/reference/07_开发包摘要.md                               6.7 KB  开发包摘要（09-11 版，整体背景）
+
+----------------------------------------------------------------------------------------------------
+逐文件 SHA256（只列代码/配置类，便于抽查一致性）
+----------------------------------------------------------------------------------------------------
+21de949b88ceeec560ccb8601c1a6fb2be9b7e470f0845a26a40d7b245760add  pyproject.toml
+ebe5580b2ac51a177cec72f16e4fd816fdd4f89a809b4e6ada463af6451c9bc2  arm_sdk/__init__.py
+91a0f3e604f072d5a0b8f18dc41059c9d49657362392272d1d49afc24c094df5  arm_sdk/__main__.py
+e1897d8f07b636e2a8d76beb9323254c78a57a2a1383caa9fab6dd534ed87235  arm_sdk/arm_config.json
+43fe7cec206551bba59873f2d88538bffd24d8e2bb650bb1276bb0bb92828788  arm_sdk/cli.py
+61a7f65d7daa366c1f80beeb7278373ea842c5955bbd88215e2713b6b646d2ad  arm_sdk/client.py
+ee16daba1ed26d83d4b1f61b251385307becc096503d75e52e8c1ba80d235812  arm_sdk/console.py
+c1edc6b000cb23fdaa997d7700158ea5a87c974afacc6a5c1bd53a02fe3c7adc  arm_sdk/http_bridge.py
+b9e0617cae2a72a630b9bd223683cbd1b111bb8180ff5c65012530b39d5800ec  arm_sdk/kinematics.py
+f89b69a86948f35f58cd15f67c4ea4346f97bd87e0aefb9295f33118f3923061  arm_sdk/mock_server.py
+97aa7b6c4fa111497f22a86c86c945694e05d6039cca069b581a76a66fc656f7  arm_sdk/protocol.py
+7becb41a338d9da819eeec27ffcc34db2b20969d42df4e97bffb9e4c4fd4f6b9  arm_sdk/sim.py
+7384bcd1d28cb3c3023a9407b89a566818da33cc3d79cf37586872e356e91401  arm_sdk/teach.py
+cb010e91f89a8b2c9ff123d53e48955a84b72baea02de86a1ed3b31c2f2b6e11  arm_sdk/teleop.py
+5bf18cf0c60203313af78c7bbea8a815b5cdf34289598482597093ee46f14194  arm_sdk/transport.py
+e1897d8f07b636e2a8d76beb9323254c78a57a2a1383caa9fab6dd534ed87235  config/arm_config.json
+9d25cce1c7e75e1b53cf5bccb951fd43028f63594ae1177c461f80c229a54cba  examples/01_quickstart.py
+369b92459bb1c1d350fa343b1c3fe292791b6c59de1b5007ede098d428dcc235  examples/02_offline_sim.py
+3df3c06fbefd0baeb65431c41672e4ebc5564bb87599a61a1313f6023e8f6916  examples/03_teleop_network.py
+6ccdaf4b77b4417484437b010e5e1f919d9d791819cdfd23b04e2fe70bc0ab2a  examples/04_teleop_record_playback.py
+911ca475c6137437e0de81eb330ff3a9e18a9ab4e1de6cd5c0f5366f85778d69  examples/05_pc_relay_serial.py
+c748bf14b4a9fd6fea46ca3bae25cb48cd4bab215f886748e9615fa64b6f7e10  examples/06_firmware_console.py
+2378c553b32d01835a991868f1218abcc58c2ebb3b4b59a25b6a52d21baaf66a  examples/07_trajectory_tools.py
+8b41a59aed1cc5310164e2b10b09c269380fe969105ffaea35ee9985863e0b38  host_integration/arm_protocol.h
+d326cc5ecce78a6cae53b5e567e04a181cb4355f2ac42f8d2ceac9b02cb5a6f4  host_integration/minimal_client.py
+94c82c5c0be0cccf002207fb70383a64a3ccd33c4bf5caf4c28b65b3fd76ab68  host_integration/protocol_spec.json
+139e1142f3c51ae2e36eb14d8d53a5738b67db5ffd348f1d7130b4887fa7ff9f  host_integration/csharp/ArmLink.cs
+90a514fb5a790f2aef6131665b743cb5239d2c7560abc3fc0ab5f579f5836694  host_integration/csharp/ArmLinkDemo.csproj
+ba02db209979be51133a7797f294509efc508d2a99a48f5fb3d4e476538f7dc1  js/package.json
+176f9b01383f48acaa816d03ed633a820b0ccbd2afd193cd10862214bc89ae5b  js/examples/01_quickstart.mjs
+5763f3d86137199e0d7caeaddef6891e89fc9a455c868285317a0bce53af5ab1  js/examples/02_offline_sim.mjs
+211d62927bdb1473f9090636a2328ce78a89adb48394375c2f8027b7ef062836  js/examples/03_teleop_network.mjs
+0d4465d70ea3863a4edab50071fa2a1ea725ed45ed281f6888375652910f6d3e  js/examples/04_record_playback.mjs
+f445cfc86aad192c2d09c4730912351814dfd639906d3e61984581bc68a6c8cc  js/examples/05_bridge_for_browser.mjs
+26d028eed148a3db7a74c25a5d5863aea9a9dd2747e9c37cc608c657e0896506  js/examples/06_text_exec.mjs
+f9d26f4d84058ef531554c67c36b7fb5207d7de3c0e248c77893c9c4cc24db6c  js/examples/_args.mjs
+f41dff5749aaa8b304d3b2a8d47eb732bec3bb606c1385f29edbcbd943eb20ba  js/src/bridge.js
+64b484b8d7f676c91eedae201167afb2c2dc4f7611c2aeac2d6456e900cc2d3f  js/src/cli.js
+e3748bf6e3835d6f8ea41af93090a98518f5326860e187d5eabb8c65663d213e  js/src/client.js
+96af3ec252cffd0ab7de42c52dce53583f5676c070a14f3552a876ec2c903a8d  js/src/console.js
+33922914e5d9f9d4ee4650882525cd3a2c8667eb0a98b28fbc35847579d9d8c1  js/src/index.js
+0df2b6435424d0a8e122e015f384be434abcc75107d3adfbf50eb4fb1220906d  js/src/kinematics.js
+0698a68cb1d2ce0e9126cf928d84dbd8987a889cb47d7011e74279243c45dfee  js/src/protocol.js
+6464fa4ab4aea17fcca6f1daf5b1e2a2b3c20f14caaccd731469351fbd5d6a17  js/src/sim.js
+48f2d2c6bef1716ad7028d3eec65b2263a9e0408c4617fa7c13b35e89eabc151  js/src/teach.js
+f776028c3734c4f6cd78692e390279a29bcd9ca28173d17d79bf89fd32717c01  js/src/teleop.js
+34888de964429c862c3769cb2f4f887f66fa9ebd2f3d24ff077efe5f20d64ccb  js/src/transport.js
+d5d009f8cd07a3aaaf5fea81e197d4cf7d46b245315da23bbcbdcb59438987e7  js/test/cross_python.mjs
+31124eeeb912b4dc9e82d399214bbb05233d785eb3a20d4bd7bd114d426262d1  js/test/integration.mjs
+622799a61560e5a5030d4ae895ffccdc54727a2b7c53534e928ec44f3f8c96b6  js/test/legacy_parity.mjs
+1dec5959ec6381c03ccbfe736a02cb8cb2dd9fb964b47958e88e0d45aa391626  js/test/protocol_vectors.json
+d77e3bc3d20089f658caac0d510ae7eab45cbe16805a1bf047b39f237175aa00  js/test/run_all.mjs
+f3cbc2bc27b4fad8033cafa65f641bb07c119e33b0d07829e526cefef7403209  js/test/udp_loopback.mjs
+b76dfeeebc67bb57f01cca0a47943bc079592a0c140456f8dcc3193b7d57998f  launchers/_common.py
+209f17a913de5d5f79164371962c9ff53592ed4ad07bb630471c576917737134  launchers/arm_link_config.json
+fadf6fb8994ec0f38925e3b317d4a55c4a64a11447274e2d5282f990d8e9af45  launchers/install_deps.bat
+b117ec185d9a7aaeab581e6334a46aa11ecc116ed0541759060ff8830d743890  launchers/install_deps.sh
+db8c9a4fa53ac4afbf0e2edf321c8a5ebbb12d1ca1892b52fa655bf7f7f9a09c  launchers/launch_teach.py
+f6e5e955673da0177a4454b595ebf4d09f4aa8cc563f38f5aa2ad427836b9306  launchers/launch_teleop.py
+a9ee2685c6a709d200a511c6bc7a936c6ab6c9f3e957fbdef1c92c2856b19d52  launchers/start_teach.bat
+bd2237ffefd8865dc8835553aab88a44498b54087b10a2e36d690150c21ef1a6  launchers/start_teach.sh
+59ab2ec294eeb194198f47d50e01ca3312cca7de21f9cccb59cf6fc6c80a5495  launchers/start_teleop.bat
+de0e6f8164f7b4adefc41b513491a5944abb7fd753857e7c2373d385948dffc9  launchers/start_teleop.sh
+f7bf198ebc2dd0f4355370a0be81610be800101491a3ab6a02bfb5c8245ab716  model/link_geometry.json
+387ff8f2aeba520d1b1af1cdc6f4e2958ff07a367a6f487222b723fdbfdb4068  tests/integration_test.py
+23f68b9f9271783bd5d2fa03454c79bf4545f907d06641095c2bc0f597bfbf3e  tests/new_commands_test.py

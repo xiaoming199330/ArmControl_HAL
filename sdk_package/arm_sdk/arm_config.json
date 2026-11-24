@@ -1,0 +1,3558 @@
+{
+  "arm_config": {
+    "_description": "6-Axis Robotic Arm Interface Contract (STM32F407 + STS3215 x6)",
+    "_date": "2026-09-29",
+    "_units": "lengths in mm, angles in degrees unless noted",
+    "_scope": "SINGLE ARM + 主从双臂. 单臂文本控制台(USART6) + 二进制协议的三条承载: 网口 UDP(首选, p50 1.61ms) / 串口(AA55 帧) / CAN(0x100+node, 8B 分包). 主从遥操、PC 中转、遥操示教含在 leader_follower / teleop_teach 两节.",
+    "_purpose": "Configuration mirror and host/simulation reference. The STM32 firmware does NOT parse this JSON at runtime.",
+    "_firmware_tag": {
+      "both": "ARM-BOTH-0924DE",
+      "net": "ARM-NET-0924DE",
+      "can": "ARM-CAN-0918H",
+      "_note": "敲 `h` 首行即 fw-tag; 上位机开机第一步应校验它 (tools/arm_preflight.py)",
+      "_0924CW": "0924CWb(2026-11-20): 采样点提前 1 位 (实测整字节右移: 0x73→0x39/0x5A→0x2D = DAT 流比 Mode3 提前一槽, bit0 在 CS↓ 后即可读); 真实 ID=0x73 红灯模拟+摇杆全 0x80/0x7F 中位 ⇒ 数据质量完美只差相位。0924CW(2026-11-20): PS2 传输层换软件 bit-bang(≈50kHz) —— 硬件 SPI1 328kHz 对 2.4G 克隆接收器每字节 MSB 粘性采样错 (0x73→F3/0x80→00), ESP32 慢速翻转同接收器字节全干净 ⇒ 时序问题。链: CU 毛刺 ID 放行+cfg a 直发模拟 / CV MSB 滤波+开机自动模拟 / CW bit-bang 根治。",
+      "_0924CE": "0924CE(2026-11-10): link 新增 AUTO 双链路自动门控 —— 开机 CAN+NET 都初始化都监听, 合法包授 active, 5s(LINK_AUTO_TIMEOUT_MS) 无包回静默;gpio/UART4/LED 引脚分配改按 BootNetPins() 判(auto 下 RMII 让位恒成立)。",
+      "_warning_tag_lag": "⚠ `GET_INFO(0x07)` 回的 fw-tag 来自 Core/Src/arm_control_api.c 的硬编码, 而控制台 `h` 打印的是 Core/Src/main.c 里另一处硬编码 —— 两处历史上多次不同步。本条记录的是 main.c（`h` 那一处）。上位机请以 `h` / PING 为准。"
+    },
+    "_firmware_sources_of_truth": {
+      "text_command_parser": "Core/Src/main.c (ProcessCommand / cmdHelp)",
+      "command_registry": "Core/Src/arm_commands.c (cmd_registry[])",
+      "multichar_guard": "Core/Src/main.c cmd_is_known_multichar() — 多字符命令白名单, 新增命令必须同步加",
+      "runtime_algorithm_parameters": "Core/Src/arm_params.c (LP/SP; pointer-bound live variables)",
+      "binary_protocol": "Core/Inc/arm_control_protocol.h",
+      "network_protocol": "Core/Src/net_proto.c (UDP :5000) — 字节级以 docs/网口指令大全_2026-09-21.md 为准",
+      "can_protocol": "Core/Src/can_proto.c — ID 三段 0x100+node / 0x180+node / 0x280+node",
+      "persistent_flash_storage": "Core/Src/flash_cfg.c — Flash 扇区11 三区共用: A=PID / B=CAN / C=LINK(链路偏好). 禁止整区擦除",
+      "mechanical_geometry": "Core/Inc/kinematics.h",
+      "note": "Keep this JSON synchronized when firmware defaults, ranges, or commands change."
+    },
+    "_control_policy": {
+      "_why": "这三条铁律是现场反复踩坑后固定下来的, 上位机必须遵守, 否则会出现'命令没反应'或'臂猛冲'.",
+      "runtime_link_determination": "只能用 `h` 首行的 active= 或网口 PING 判定当前链路; 不要用偏好值推断(红线 69)",
+      "no_hot_switch": "link 改偏好 -> link save -> RESET 才生效; 运行期挪不动引脚 AF",
+      "prefer_network": "网口 p50 1.61ms / CAN 2.72ms / 串口 4.78ms —— 实时遥操优先网口",
+      "angles_are_two_systems": "GET_STATUS/FK_QUERY/MOVE_JOINTS/MOVE_CART 用**舵机度**(0~360); STREAM_JOINTS/#P 用**逻辑角**(rel-home). 见 angle_systems 一节",
+      "no_fallback_on_read_fail": "某轴读失败必须如实上报(None / -32768), 绝不能填 0 或上次值"
+    },
+    "console_contract": {
+      "_comment": "上位机与控制台(USART6)的接口契约。固件实现: main.c Console_TryReadLine()/ProcessCommand()。",
+      "baud_rate": 115200,
+      "frame": "8N1 (8 data bits, no parity, 1 stop bit)",
+      "flow_control": "none",
+      "charset": "ASCII only (中文/全角不被识别)",
+      "max_line_length": 127,
+      "max_tokens": 16,
+      "token_delimiters": [
+        "space",
+        "tab(0x09)"
+      ],
+      "_token_delimiters_note": "不认逗号/分号/引号",
+      "case_sensitive": true,
+      "_case_note": "严格区分大小写: m!=M, p!=P, s!=S, t!=T, b!=B, c!=C, d!=D, q!=Q ...",
+      "number_parsing": "角度/坐标=atof(支持小数); 关节号/枚举=atoi(整数)",
+      "echo": "每个字符原样回显; 行尾回 \\r\\n; 执行后打印提示符 \"> \"",
+      "unsupported": [
+        "ANSI escape sequences",
+        "quoted strings",
+        "comments"
+      ],
+      "_line_ending_MOST_IMPORTANT": {
+        "_why": "固件把 '\\r'(0x0D) 和 '\\n'(0x0A) 都当作一行结束; 没有行尾则命令永不执行(表现为'下发了没响应')。",
+        "firmware_rule": "if (ch == '\\r' || ch == '\\n') { execute }",
+        "accepted": {
+          "CRLF": "0D 0A",
+          "LF": "0A",
+          "CR": "0D"
+        },
+        "recommended": "\\r\\n",
+        "rejected": {
+          "no_terminator": "命令永不执行",
+          "empty_line": "忽略(不报错)"
+        },
+        "note": "每条命令末尾必须带 \\r 或 \\n 或 \\r\\n, 否则固件永不执行该命令",
+        "crlf_double_execution": "否。\\r 结束当前行, 紧跟的 \\n 视为空行被丢弃, 只执行 1 次。"
+      },
+      "_binary_protocol_same_port": {
+        "frame": "AA 55 SEQ CMD LEN PAYLOAD CRC16(2B, low first)",
+        "crc": "CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF), 范围 SEQ..PAYLOAD",
+        "max_frame_bytes": 71,
+        "fixed_point": {
+          "angle": "int16 x 0.1 deg",
+          "position": "int16 x 0.1 mm",
+          "velocity": "uint16 x 0.1 deg/s",
+          "acceleration": "uint16 x 0.1 deg/s^2",
+          "gain_K": "int16 x 0.001 deg/mm",
+          "param_value": "int32 x 0.001"
+        },
+        "responses": "查询类 CMD|0x80; 控制类 ACK=0x7F / NACK=0x7E + 错误码",
+        "note": "以 0xAA 0x55 作为二进制帧起始判据(文本控制台不会输出 0xAA)"
+      }
+    },
+    "binary_protocol_commands": [
+      {
+        "cmd": "0x01",
+        "name": "PING",
+        "payload": "-",
+        "response": "0x81: u8 proto_ver, u8 run_id"
+      },
+      {
+        "cmd": "0x02",
+        "name": "GET_STATUS",
+        "payload": "-",
+        "response": "0x82: ArmApiStatus 定点快照"
+      },
+      {
+        "cmd": "0x03",
+        "name": "LOG_SET_LEVEL",
+        "payload": "u8 level(0~3)",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x10",
+        "name": "MOVE_JOINTS",
+        "payload": "6xi16 角度 + u16 v + u16 a",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x11",
+        "name": "STOP",
+        "payload": "-",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x12",
+        "name": "SET_TORQUE",
+        "payload": "u8 joint(0~5,0xFF=all) u8 en",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x20",
+        "name": "MOVE_CART",
+        "payload": "i16 x,y,z + i16 pitch + u16 v + u16 a",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x21",
+        "name": "FK_QUERY",
+        "payload": "-",
+        "response": "0xA1: 位姿 + 六关节角"
+      },
+      {
+        "cmd": "0x30",
+        "name": "SET_GRAVITY",
+        "payload": "i16 K(0.001 deg/mm)",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x31",
+        "name": "SET_CORRECTION",
+        "payload": "u8 en, u16 thr(0.01deg), u8 rounds",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x40",
+        "name": "PARAM_READ",
+        "payload": "u8 id",
+        "response": "0xC0: u8 id, i32 val*1000"
+      },
+      {
+        "cmd": "0x41",
+        "name": "PARAM_WRITE",
+        "payload": "u8 id, i32 val*1000",
+        "response": "ACK"
+      },
+      {
+        "cmd": "0x42",
+        "name": "PARAM_COUNT",
+        "payload": "-",
+        "response": "0xC2: u8 count"
+      },
+      {
+        "cmd": "0x7F",
+        "name": "ACK",
+        "payload": "u8 orig_cmd, u8 err(=0)",
+        "response": "-"
+      },
+      {
+        "cmd": "0x7E",
+        "name": "NACK",
+        "payload": "u8 orig_cmd, u8 err(ARM_API_ERR_*)",
+        "response": "-"
+      },
+      {
+        "cmd": "0x13",
+        "name": "STREAM_JOINTS",
+        "payload": "6xi16 逻辑角*10",
+        "response": "ACK",
+        "_note": "主从实时直写; 断流>500ms 从臂退出流模式自锁; 单帧单轴跳变>25° 整帧拒收 err=4 且不更新基准"
+      }
+    ],
+    "carriers": {
+      "_comment": "同一个逻辑包 SEQ|CMD|LEN|PAYLOAD|CRC16-LE 可以在三条物理链路上跑。换链路 = 换 Carrier, 业务代码不动。arm_sdk/protocol.py 里 UdpCarrier / SerialCarrier / CanCarrier 就是这三层。",
+      "udp": {
+        "_preferred": true,
+        "carrier_bytes": "无外壳。一个 UDP 数据报 = 一个逻辑包 (无帧头/无分包/无重传)",
+        "default_endpoint": "192.168.7.120:5000 (从臂默认)",
+        "max_logical_packet": 69,
+        "tx_rx": "板子 = UDP server(监听 5000); 主机向该端口发, 板子回给来源 IP:PORT",
+        "latency_measured": {
+          "p50_ms": 1.61,
+          "p99_ms": 3.4,
+          "max_ms": 117.66,
+          "timeouts": 0,
+          "achieved_fps": 547
+        },
+        "silent_drop_cases": [
+          "目的端口不是 5000",
+          "目的 IP 不是本板",
+          "5+LEN != 数据报实际长度"
+        ],
+        "_note": "UDP 无顺序保证; 主机必须按 SEQ 自己配对(arm_sdk/client.py 已做)"
+      },
+      "serial": {
+        "port": "USART6 PC6/PC7 @115200 8N1",
+        "carrier_bytes": "AA 55 + <逻辑包>   (帧头 2 字节; CRC 只覆盖 SEQ..PAYLOAD)",
+        "max_frame_bytes": 71,
+        "mixes_with_text": "同口还有文本控制台。AA 不会出现在文本输出里, 所以 0xAA 0x55 就是二进制帧起始判据; 主机的分帧器必须能把文本行与二进制帧分开(arm_sdk/protocol.py FrameStreamParser)",
+        "latency_measured": {
+          "p50_ms": 4.78,
+          "p99_ms": 6.32,
+          "max_ms": 15.26,
+          "timeouts": 0,
+          "achieved_fps": 202,
+          "_port": "COM11 (Windows; 枚举号会变, 先列口)"
+        },
+        "_note": "串口恒通: USART6 与 CAN/网口都不冲突, 是切链路唯一可靠的通道"
+      },
+      "can": {
+        "id_layout": {
+          "cmd_to_arm": "0x100 + node_id",
+          "rsp_to_host": "0x180 + node_id",
+          "evt_status": "0x280 + node_id",
+          "test": "0x7E0"
+        },
+        "bitrate_default_kbit_s": 500,
+        "carrier_bytes": "逻辑包按 8 字节切分; 首帧 data[0]=0x80|N (N=分片总数), 后续帧 data[0]=分片序号",
+        "max_payload_per_frame": 7,
+        "reassembly": "必须重组: bxCAN 有 3 个 mailbox, 分片**可能乱序到达** (arm_sdk CanReassembler 按帧号缓冲)",
+        "fragmentation": {
+          "12B payload (STREAM_JOINTS)": "2 帧",
+          "69B max": "10 帧"
+        },
+        "latency_measured": {
+          "p50_ms": 2.72,
+          "p99_ms": 6.6,
+          "max_ms": 179.94,
+          "timeouts": 4,
+          "achieved_fps": 341
+        },
+        "config_command": "can [node N|baud K|hb ms|save|reset|stat clr]",
+        "forensics": "cx / cp / cy / cz / cw / ps / ct / cn (2026-09-14~09-18 的取证链)",
+        "runtime_interface_switch": "cx 1|2  (CAN1 PB8/PB9 <-> CAN2 PB12/PB13)",
+        "_note": "CAN 与网口**物理互斥**: PB13 = ETH_TXD1 = CAN2_TX; PC4/PC5 = RMII_RXD0/1 = 原绿/红 LED"
+      }
+    },
+    "network_protocol": {
+      "_comment": "LINK=net / LINK=both 下 UDP :5000 的完整接口。38 条命令(14 基础 + 24 扩展, 2026-09-23) 全部 field-level; 权威文档 Core 侧同源: docs/网口指令大全_2026-09-23.md; 扩展的设计基准: docs/网口指令扩展设计_2026-09-23.md。",
+      "port": 5000,
+      "default_ip": "192.168.7.120",
+      "logical_packet": "SEQ(1) | CMD(1) | LEN(1) | PAYLOAD(LEN) | CRC16-LE(2)",
+      "crc": {
+        "name": "CRC-16/CCITT-FALSE",
+        "poly": "0x1021",
+        "init": "0xFFFF",
+        "refin": false,
+        "refout": false,
+        "xorout": 0,
+        "coverage": "SEQ..PAYLOAD (不含 CMD 前的任何字节)",
+        "check": "crc16(b'123456789') == 0x29B1"
+      },
+      "seq": {
+        "allocated_by": "主机; 自增 0~255 回绕; 固件只做回显, 不做去重/排序",
+        "rule": "响应里的 SEQ 一定等于请求的 SEQ ⇒ 主机必须按 SEQ 配对, 否则串包"
+      },
+      "len": {
+        "range": "0~64",
+        "max_logical_packet": 69,
+        "wrong_len_is_silent": true
+      },
+      "response_codes": {
+        "query": "CMD|0x80  (0x01->0x81, 0x02->0x82, 0x21->0xA1, 0x40->0xC0, 0x42->0xC2) ",
+        "control": "0x7F ACK / 0x7E NACK; 负载 = {orig_cmd, err}",
+        "_anti_deadlock": "CMD >= 0x80 的入站包**故意不回**(防双方互相回包打转)"
+      },
+      "error_codes": {
+        "0": "OK",
+        "1": "PARAM(参数/长度非法)",
+        "2": "CRC",
+        "3": "UNREACH(IK 不可达 / 非流模式)",
+        "4": "LIMIT(限位或跳变拒帧)",
+        "5": "ESTOP(急停)",
+        "6": "FK_VERIFY(FK 校验超差)",
+        "7": "READ(舵机读失败)",
+        "8": "MAGIC(危险命令 magic 不符)",
+        "9": "BUSY(轨迹/示教/回放进行中, 当前操作不允许)",
+        "10": "NOTCAL(未做 Home 零点校准, 无法换算)"
+      },
+      "no_reply_cases": {
+        "_comment": "这 6 种情况板子**一个字节都不回** ⇒ 主机只看'超时'是分不清的, 必须逐条排查",
+        "1": "LEN 与数据报实际长度不符 (5+LEN != len(datagram)) —— 静默丢弃",
+        "2": "目的端口不是 5000",
+        "3": "目的 IP 不是本板",
+        "4": "入站 CMD >= 0x80 (防死锁, 刻意不回)",
+        "5": "CRC 错 —— **例外**: 这是唯一会回包的坏包, 回 NACK err=2",
+        "6": "当前构建没开网口链路 (link 偏好未落盘/未 RESET, 或本构建是 LINK=can)"
+      },
+      "sentinel_and_flags": {
+        "raw_read_fail": "-32768 (0x8000) —— 该轴读数无效",
+        "get_status_flags_bit3": "read_ok (0x08)",
+        "fk_query_offset_20": "read_ok, **裸 0/1** (不是位域; Status 与 FkResult 顺序也不同)",
+        "_rule": "read_ok=0 ⇒ 不要用位姿字段(x/y/z/pitch 是 0, 不是有效值)"
+      },
+      "angle_systems": {
+        "_comment": "★ 上位机最容易错的地方: 两套角度的量纲不同, 不能混用",
+        "servo_deg": {
+          "range": "0~360 wrap",
+          "used_by": [
+            "GET_STATUS",
+            "FK_QUERY",
+            "MOVE_JOINTS",
+            "MOVE_CART"
+          ]
+        },
+        "logical_deg": {
+          "meaning": "相对本臂 Home 零点, 归一到 (-180,180]",
+          "used_by": [
+            "STREAM_JOINTS (0x13)",
+            "#P (PC 中转)"
+          ]
+        },
+        "conversion": {
+          "servo": "(offset[j] + dir[j]*logical[j]) mod 360",
+          "logical": "wrap180(dir[j] * (servo[j] - offset[j]))"
+        },
+        "joint_dir": [
+          -1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "default_offset_deg": [
+          180.0,
+          180.0,
+          180.0,
+          180.0,
+          180.0,
+          180.0
+        ],
+        "offset_source": "`zi` 文本命令读出本机 calib_zero_raw; arm_sdk parse_servo_offset_from_zi()",
+        "_why_it_matters": "两臂都校准到同一物理基准, 逻辑角才可比; 否则遥操一开就从臂猛冲"
+      },
+      "stream_constraints": {
+        "watchdog_ms": 500,
+        "_watchdog": "断流超过 500ms ⇒ 从臂自动退出流模式并在原地自锁 ⇒ 频率必须 >2Hz, 建议 20~50Hz",
+        "max_jump_deg": 25.0,
+        "_max_jump": "单帧单轴跳变 >25° ⇒ **整帧拒收** err=4, 且**不更新跳变基准** ⇒ 同一目标反复发会一直被拒(自锁冻结)。必须用限速从源头避免",
+        "single_frame_bytes": 12,
+        "recommended_hz": [
+          20,
+          50
+        ],
+        "gated_by": "从臂 `sf 0|1` 门闩 —— sf 0 时忽略所有流帧"
+      },
+      "commands": [
+        {
+          "cmd": "0x01",
+          "name": "PING",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0x81: u8 proto_ver(=1), u8 run_id(本次上电随机)",
+          "errs": "-",
+          "hex_example": "seq=0x31 -> 31 01 00 38 0D",
+          "notes": "★ 第 2 字节是 run_id, **不是错误码** —— 别按 err 解析"
+        },
+        {
+          "cmd": "0x02",
+          "name": "GET_STATUS",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0x82 (21B): 6×i16 关节(舵机度×10) | i16 X/Y/Z/Pitch(×10) | u8 flags",
+          "response_layout": {
+            "joints": "offset 0..11, 每轴 i16 ×10, 单位舵机度; -32768 = 读失败",
+            "x/y/z": "offset 12/14/16, i16 ×10, mm (read_ok=0 时为 0, 非有效值)",
+            "pitch": "offset 18, i16 ×10, deg",
+            "flags": "offset 20, u8 位域: bit0=estop bit1=traj bit2=corr bit3=read_ok"
+          },
+          "errs": "-",
+          "notes": "★ 上位机主循环用这条; 每轴读失败必须如实上报(None), 不要兜底"
+        },
+        {
+          "cmd": "0x03",
+          "name": "LOG_SET_LEVEL",
+          "dir": "control",
+          "payload": "u8 level(0~3)",
+          "payload_len": 1,
+          "response": "ACK/NACK",
+          "errs": "1=level 越界",
+          "notes": "只影响串口日志级别, 不影响网口"
+        },
+        {
+          "cmd": "0x10",
+          "name": "MOVE_JOINTS",
+          "dir": "control",
+          "payload": "6×i16 目标角(舵机度×10) | u16 v(×10 deg/s) | u16 a(×10 deg/s²)",
+          "payload_len": 16,
+          "response": "ACK/NACK",
+          "errs": "0=收下(≠已动) / 4=限位 / 5=急停",
+          "notes": "★ 舵机度, 不是逻辑角。★ 超限**静默钳制**(仍回 err=0, 只往串口打 WARNING); ★ 读起点失败时也回 ACK 但轨迹没起步 ⇒ 判断'动没动'必须用 GET_STATUS 看角度是否真变"
+        },
+        {
+          "cmd": "0x11",
+          "name": "STOP",
+          "dir": "control",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "ACK",
+          "errs": "总是 0",
+          "notes": "平滑减速, **不是急停断电**"
+        },
+        {
+          "cmd": "0x12",
+          "name": "SET_TORQUE",
+          "dir": "control",
+          "payload": "u8 joint(0~5 单轴 / 0xFF 全部) | u8 enable(0/1)",
+          "payload_len": 2,
+          "response": "ACK/NACK",
+          "errs": "1=joint=6 等非法值",
+          "notes": "★ 6 是非法值(0~5 或 0xFF); arm_sdk 在客户端就拦"
+        },
+        {
+          "cmd": "0x13",
+          "name": "STREAM_JOINTS",
+          "dir": "control",
+          "payload": "6×i16 **逻辑角**×10",
+          "payload_len": 12,
+          "response": "ACK/NACK",
+          "errs": "4=跳变>25°整帧拒 / 5=急停 / 3=非流模式",
+          "hex_example": "[0,10,20,30,40,50] -> 00 00 64 00 C8 00 2C 01 90 01 F4 01",
+          "notes": "★ 遥操主通路; 见 stream_constraints; 必须 >2Hz"
+        },
+        {
+          "cmd": "0x20",
+          "name": "MOVE_CART",
+          "dir": "control",
+          "payload": "i16 X,Y,Z(mm×10) | i16 pitch(deg×10) | u16 v | u16 a",
+          "payload_len": 16,
+          "response": "ACK/NACK",
+          "errs": "3=IK 不可达 / 4=限位 / 5=急停",
+          "notes": "⚠ 会归零 J5/J6 ⇒ 遥操**不能**用它, 必须用 STREAM_JOINTS"
+        },
+        {
+          "cmd": "0x21",
+          "name": "FK_QUERY",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0xA1 (21B): i16 X/Y/Z/Pitch(×10) | 6×i16 关节(舵机度×10) | u8 read_ok",
+          "response_layout": {
+            "x/y/z/pitch": "offset 0/2/4/6",
+            "joints": "offset 8..19",
+            "read_ok": "offset 20, **裸 0/1**(非位域)"
+          },
+          "errs": "-",
+          "notes": "★ 与 GET_STATUS **顺序相反** —— 别复用同一个解码器"
+        },
+        {
+          "cmd": "0x30",
+          "name": "SET_GRAVITY",
+          "dir": "control",
+          "payload": "i16 K(×1000, deg/mm)",
+          "payload_len": 2,
+          "response": "ACK/NACK",
+          "errs": "1=超范围",
+          "notes": "现主要供示教/重力前馈"
+        },
+        {
+          "cmd": "0x31",
+          "name": "SET_CORRECTION",
+          "dir": "control",
+          "payload": "u8 enable | u16 threshold(×100, deg) | u8 max_rounds",
+          "payload_len": 4,
+          "response": "ACK/NACK",
+          "errs": "1=超范围",
+          "notes": "自适应修正开关; J2/J3/J4 参与"
+        },
+        {
+          "cmd": "0x40",
+          "name": "PARAM_READ",
+          "dir": "query",
+          "payload": "u8 id",
+          "payload_len": 1,
+          "response": "0xC0 (5B): u8 id(回显) | i32 value(×1000)",
+          "errs": "1=id 不存在",
+          "notes": "★ 必须校验 id 回显, 不符 = 串包"
+        },
+        {
+          "cmd": "0x41",
+          "name": "PARAM_WRITE",
+          "dir": "control",
+          "payload": "u8 id | i32 value(×1000)",
+          "payload_len": 5,
+          "response": "ACK/NACK",
+          "errs": "1=id 非法",
+          "notes": "★ 超范围**静默钳制且仍回 err=0** ⇒ 要确认真值必须 PARAM_READ 回读"
+        },
+        {
+          "cmd": "0x42",
+          "name": "PARAM_COUNT",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0xC2 (1B): u8 count",
+          "errs": "-",
+          "hex_example": "seq=0x43 -> 43 42 00 CF E3",
+          "notes": "现役 24 项 (LP 表长 46, 不连续是正常的)"
+        },
+        {
+          "cmd": "0x04",
+          "name": "GET_JOINT_DETAIL",
+          "dir": "query",
+          "payload": "u8 joint(0~5 | 0xFF=全部)",
+          "payload_len": 1,
+          "response": "0x84: u8 n, u8 joint0, n x 10B {u16 pos_raw, i16 speed, i16 load, u8 volt(0.1V), u8 temp, u8 err, u8 ok}",
+          "errs": "1=joint 非法",
+          "notes": "u8 joint(0~5|0xFF) -> 0x84: u8 n, u8 joint0, n x 10B {u16 pos_raw, i16 speed, i16 load, u8 volt(0.1V), u8 temp, u8 err, u8 ok}; 6 轴 = 62B <= 64; temp/err 的 0xFF = 这一拍丢读(不是 0 度/不是故障)"
+        },
+        {
+          "cmd": "0x05",
+          "name": "GET_LIMITS",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0x85: 6 x 8B {u16 min_raw, pos_raw, max_raw, zero_raw} = 48B",
+          "errs": "0",
+          "notes": "-> 0x85: 6 x 8B = 48B {u16 min_raw,pos_raw,max_raw,zero_raw}; 取自 Flash 校准记录(PID_JointLimits_t); zero_raw==0 ⇒ 未做 Home 零点校准(固件回落 180/raw 2048)"
+        },
+        {
+          "cmd": "0x07",
+          "name": "GET_INFO",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0x87: u8 tag_len, char fw_tag[16], u8 build, u8 link, u8 nsrv = 20B",
+          "errs": "0",
+          "notes": "-> 0x87: u8 tag_len, char fw_tag[16], u8 build, u8 link, u8 nsrv = 20B; build 0=net 1=can 2=both 3=uart 4=off; ⚠ link 是 LinkCfg_ActiveMode() 的【启动冻结值】, 不是 Flash 偏好"
+        },
+        {
+          "cmd": "0x0A",
+          "name": "GET_FLAGS",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0x8A: u8 flags(bit0=ESTOP bit1=轨迹 bit2=流 bit3=修正 bit4=示教录制 bit5=回放), u8 run_id = 2B",
+          "errs": "0",
+          "notes": "-> 0x8A: u8 flags(bit0 estop/bit1 traj/bit2 stream/bit3 corr/bit4 teach_rec/bit5 teach_play), u8 run_id = 2B; ⚠ 只读变量不碰总线 ⇒ 可 10~50Hz 轮询"
+        },
+        {
+          "cmd": "0x0B",
+          "name": "TEXT_EXEC",
+          "dir": "control",
+          "payload": "u32 magic(无条件) | char text[](NUL 结尾, <=58 字节)",
+          "payload_len": "4+N",
+          "response": "0x8B: u16 total, u8 flags(bit0=输出被截断 bit1=被安全闸门拒绝), u16 off, u8 n, char text[n]",
+          "errs": "1=参数非法(>58B 或缺 NUL) / 8=magic 不符",
+          "notes": "u32 magic(无条件), char text[](NUL 结尾, <=58) -> 0x8B: u16 total, u8 flags, u16 off, u8 n, text[n]; flags bit0=输出被 2048B 截断, bit1=被安全闸门拒绝(正文是原因说明)"
+        },
+        {
+          "cmd": "0x0C",
+          "name": "TEXT_FETCH",
+          "dir": "query",
+          "payload": "u16 off | u8 n(1~58)",
+          "payload_len": 3,
+          "response": "0x8C: 与 0x8B 同一负载格式",
+          "errs": "1=参数非法",
+          "notes": "u16 off, u8 n(1~58) -> 0x8C: 同 0x8B 格式; 取上一条 TEXT_EXEC 的后续分页"
+        },
+        {
+          "cmd": "0x14",
+          "name": "MOVE_JOINT_ONE",
+          "dir": "control",
+          "payload": "u8 joint(0~5) | i16 deg*10 | u16 v*10 | u16 a*10",
+          "payload_len": 7,
+          "response": "ACK/NACK",
+          "errs": "1=joint 非法 / 4=限位 / 5=急停 / 7=该轴读失败",
+          "notes": "u8 joint(0~5), i16 deg*10(舵机度!), u16 v*10, u16 a*10 = 7B -> ACK; ⚠ 先读全场快照只改这一轴 ⇒ 任一轴丢读则整条 ERR_READ(7)"
+        },
+        {
+          "cmd": "0x17",
+          "name": "SET_BUS_MODE",
+          "dir": "control",
+          "payload": "u8 mode(0=正常 / 1=全A总线 / 2=全B总线)",
+          "payload_len": 1,
+          "response": "ACK/NACK",
+          "errs": "1=mode 越界",
+          "notes": "u8 mode(0=正常 A:AABBB / 1=全A / 2=全B) -> ACK"
+        },
+        {
+          "cmd": "0x18",
+          "name": "SERVO_INIT",
+          "dir": "control",
+          "payload": "u8 joint(0~5 | 0xFF=全部)",
+          "payload_len": 1,
+          "response": "ACK/NACK",
+          "errs": "1=joint 非法",
+          "notes": "u8 joint(0~5|0xFF) -> ACK; ⚠ 重写该轴 PID/限位/中位并 RESET, 同文本 i"
+        },
+        {
+          "cmd": "0x22",
+          "name": "IK_QUERY",
+          "dir": "query",
+          "payload": "i16 x,y,z(mm*10) | i16 pitch*10",
+          "payload_len": 8,
+          "response": "0xA2: 6 x i16 舵机度*10 = 12B",
+          "errs": "3=UNREACH / 4=LIMIT / 6=FK_VERIFY",
+          "notes": "i16 x,y,z(mm*10), i16 pitch*10 = 8B -> 0xA2: 6 x i16 舵机度*10; 【只解不算】解算+限位检查+FK 回代, 不启动运动; err=3 不可达 / 4 超限位 / 6 回代超差"
+        },
+        {
+          "cmd": "0x32",
+          "name": "GET_GRAVITY",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0xB2: i16 K(0.001 deg/mm) = 2B",
+          "errs": "0",
+          "notes": "-> 0xB2: i16 K(0.001 deg/mm)"
+        },
+        {
+          "cmd": "0x33",
+          "name": "GET_CORRECTION",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0xB3: u8 en, u16 threshold*100, u8 max_rounds, u8 pending = 5B",
+          "errs": "0",
+          "notes": "-> 0xB3: u8 en, u16 thr*100, u8 max_rounds, u8 pending = 5B"
+        },
+        {
+          "cmd": "0x36",
+          "name": "GET_PID",
+          "dir": "query",
+          "payload": "u8 joint(0~5)",
+          "payload_len": 1,
+          "response": "0xB6: u8 p, u8 i, u8 d, u8 from_eeprom = 4B",
+          "errs": "1=joint 非法",
+          "notes": "u8 joint(0~5) -> 0xB6: u8 p, u8 i, u8 d, u8 from_eeprom = 4B; ⚠ 顺序就是 p/i/d(底层 SERVO_ReadPidEeprom 形参是 (p,d,i), API 层已换算, 不要再换); from_eeprom=0 ⇒ 读失败"
+        },
+        {
+          "cmd": "0x43",
+          "name": "PARAM_SAVE",
+          "dir": "control",
+          "payload": "u32 magic",
+          "payload_len": 4,
+          "response": "ACK/NACK",
+          "errs": "8=magic 不符",
+          "notes": "u32 magic -> ACK; 等价文本 F(参数落盘)"
+        },
+        {
+          "cmd": "0x44",
+          "name": "PARAM_LIST",
+          "dir": "query",
+          "payload": "u8 offset",
+          "payload_len": 1,
+          "response": "0xC4: u8 total, u8 n, n x 10B {u8 id, u8 type, i32 vmin, i32 vmax} (n<=6)",
+          "errs": "1=offset 越界",
+          "notes": "u8 offset -> 0xC4: u8 total, u8 n, n x 10B {u8 id, u8 type, i32 vmin*1000, i32 vmax*1000}; ⚠ 必须 i32(范围里有超 i16 的值, 压 i16 会静默截断); 2+6*10=62<=64; 值用 PARAM_READ 单取(带上会超 64B); 翻页终止 n==0 或 offset+n>=total"
+        },
+        {
+          "cmd": "0x50",
+          "name": "TEACH_LIST",
+          "dir": "query",
+          "payload": "u8 idx",
+          "payload_len": 1,
+          "response": "0xD0: u8 total, u8 idx, u8 valid, char name[12], u32 samples",
+          "errs": "1=idx 越界",
+          "notes": "u8 idx -> 0xD0: u8 total, u8 idx, u8 valid, char name[12], u32 samples = 19B; valid=0 ⇒ tombstone"
+        },
+        {
+          "cmd": "0x51",
+          "name": "TEACH_READ",
+          "dir": "query",
+          "payload": "u8 idx | u16 off | u8 n(1~5)",
+          "payload_len": 4,
+          "response": "0xD1: u8 n, n x 12B (6 x u16 raw)",
+          "errs": "1=idx 或 n 非法",
+          "notes": "u8 idx, u16 off, u8 n(1~5) -> 0xD1: u8 n, n x 12B(6 x u16 raw); 12*5=60<=64; 1000 点 = 200 请求 ≈ 0.3s @p50 1.61ms; ⚠ off 越界 ⇒ n=0 = 正常读完(不是错误)"
+        },
+        {
+          "cmd": "0x53",
+          "name": "TEACH_DELETE",
+          "dir": "control",
+          "payload": "u8 idx",
+          "payload_len": 1,
+          "response": "ACK/NACK",
+          "errs": "1=idx 越界",
+          "notes": "u8 idx -> ACK(写 tombstone)"
+        },
+        {
+          "cmd": "0x54",
+          "name": "TEACH_COMPACT",
+          "dir": "control",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "ACK/NACK",
+          "errs": "0",
+          "notes": "-> ACK(回收 tombstone 空间; 会擦 Flash, 别频繁调)"
+        },
+        {
+          "cmd": "0x55",
+          "name": "TEACH_TOTAL",
+          "dir": "query",
+          "payload": "-",
+          "payload_len": 0,
+          "response": "0xD5: u8 nfiles, u8 capacity, u32 total_samples, u32 free_bytes = 10B",
+          "errs": "0",
+          "notes": "-> 0xD5: u8 nfiles, u8 capacity, u32 total_samples, u32 free_bytes = 10B"
+        },
+        {
+          "cmd": "0x70",
+          "name": "CENTER_CALIB",
+          "dir": "control",
+          "payload": "u32 magic",
+          "payload_len": 4,
+          "response": "ACK/NACK",
+          "errs": "8=magic 不符",
+          "notes": "u32 magic -> ACK; 执行文本 `M a`(六轴推 raw 2048) ⚠ 改量纲基准, 不可逆"
+        },
+        {
+          "cmd": "0x71",
+          "name": "CALIB_ENTER",
+          "dir": "control",
+          "payload": "u32 magic",
+          "payload_len": 4,
+          "response": "**一律 NACK**",
+          "errs": "1=PARAM",
+          "notes": "u32 magic -> 【一律 NACK(ERR_PARAM)】⚠【设计上不可用, 不是实现漏项】cmdCalibrate() 是 for(;;) 等人在本机串口敲键; 从网口进 = 主循环永不返回, 本工程无看门狗 ⇒ 板子彻底失联。保留码位是为了让\"不可用\"在协议层面显式可见"
+        },
+        {
+          "cmd": "0x72",
+          "name": "ZERO_RESET",
+          "dir": "control",
+          "payload": "u8 flags(bit0=1 同时落盘) | u32 magic",
+          "payload_len": 5,
+          "response": "ACK/NACK",
+          "errs": "8=magic 不符",
+          "notes": "u8 flags(bit0=1 同时落盘, 即 `zr save`), u32 magic -> ACK; ⚠ 文本 zr 【没有单轴变体】(一次复位全部六轴) ⇒ 协议也不给关节号"
+        },
+        {
+          "cmd": "0x73",
+          "name": "SYS_RESET",
+          "dir": "control",
+          "payload": "u32 magic",
+          "payload_len": 4,
+          "response": "ACK(先回 ACK, 150ms 后再复位)",
+          "errs": "8=magic 不符",
+          "notes": "u32 magic -> ACK 【之后再】复位(先回 ACK, 150ms 后 NVIC_SystemReset; 顺序反了上位机只会看到超时); 远程切链路完整序列: TEXT_EXEC(\"link can\") -> TEXT_EXEC(\"link save\") -> SYS_RESET"
+        }
+      ],
+      "param_table": {
+        "_comment": "id -> (name, unit, min, max, default)。与固件 arm_params.c 同源。",
+        "1": [
+          "ik.converge_mm",
+          "mm",
+          0.1,
+          5.0,
+          0.5
+        ],
+        "2": [
+          "ik.max_iter",
+          "iter",
+          10,
+          500,
+          100
+        ],
+        "3": [
+          "ik.fail_mm",
+          "mm",
+          0.5,
+          10.0,
+          1.0
+        ],
+        "4": [
+          "ik.fk_verify_mm",
+          "mm",
+          1.0,
+          20.0,
+          5.0
+        ],
+        "16": [
+          "sc.tj",
+          "s",
+          0.02,
+          0.5,
+          0.15
+        ],
+        "17": [
+          "sc.def_vmax",
+          "deg/s",
+          5,
+          300,
+          25
+        ],
+        "18": [
+          "sc.def_accel",
+          "deg/s2",
+          10,
+          600,
+          80
+        ],
+        "19": [
+          "sc.v_min",
+          "deg/s",
+          1,
+          50,
+          5
+        ],
+        "20": [
+          "sc.v_max",
+          "deg/s",
+          50,
+          300,
+          300
+        ],
+        "21": [
+          "sc.accel_factor",
+          "ratio",
+          1.0,
+          4.0,
+          2.0
+        ],
+        "32": [
+          "gc.k",
+          "deg/mm",
+          0.0,
+          0.5,
+          0.0
+        ],
+        "33": [
+          "corr.enabled",
+          "0/1",
+          0,
+          1,
+          1
+        ],
+        "34": [
+          "corr.threshold",
+          "deg",
+          0.5,
+          10.0,
+          2.0
+        ],
+        "35": [
+          "corr.max_rounds",
+          "rounds",
+          1,
+          20,
+          10
+        ],
+        "36": [
+          "corr.gain_j1",
+          "ratio",
+          0.0,
+          0.85,
+          0.2
+        ],
+        "37": [
+          "corr.gain_j2",
+          "ratio",
+          0.0,
+          0.85,
+          0.5
+        ],
+        "38": [
+          "corr.gain_j3",
+          "ratio",
+          0.0,
+          0.85,
+          0.3
+        ],
+        "39": [
+          "corr.gain_j4",
+          "ratio",
+          0.0,
+          0.85,
+          0.2
+        ],
+        "40": [
+          "corr.gain_j5",
+          "ratio",
+          0.0,
+          0.85,
+          0.2
+        ],
+        "41": [
+          "corr.gain_j6",
+          "ratio",
+          0.0,
+          0.85,
+          0.2
+        ],
+        "42": [
+          "traj.approach_speed",
+          "1=4.39deg/s",
+          0,
+          4095,
+          30
+        ],
+        "43": [
+          "traj.approach_frac",
+          "ratio",
+          0.0,
+          0.25,
+          0.05
+        ],
+        "44": [
+          "servo.accel",
+          "-",
+          0,
+          254,
+          10
+        ],
+        "45": [
+          "traj.handoff_deg",
+          "deg",
+          0.0,
+          15.0,
+          0.0
+        ]
+      },
+      "_known_gaps_status": "★ 2026-09-23 扩展关闭了其中 5 条(见 extension_2026_09_23); 下表保留原始记录 + 逐条标注。",
+      "known_gaps_2026_09_21": [
+        "运行时关节限位 `L` 的舵机度区间 (J1 63~303 / J2 75~284 / J3 76~271 / J4 71~284 / J5 12~351 / J6 138~266) 未进协议; 只能 `L` 文本读 [2026-09-23: 仍存在; 可用 TEXT_EXEC(\"L\") 取回]",
+        "舵机逐字段瞬时丢读(非某轴坏): Angle≈5% / Temp≈20% / Moving≈33%, 各自独立随机 ⇒ 单次读数不可全信, 上位机应做滑窗健壮化 [2026-09-23: GET_JOINT_DETAIL 已给 temp/err 的 0xFF 哨兵; 去抖仍需上位机]",
+        "STREAM_JOINTS 被拒帧(err=4)时固件只在串口打限流日志; 网口无'当前基准值'查询命令 [2026-09-23: 仍存在]",
+        "无网口侧的统一错误计数器查询(出错只能看串口) [2026-09-23: 仍存在]",
+        "E-Stop 实时读 PE11 但**不自锁** ⇒ 人不要停在扫过区 [2026-09-23: 仍存在; GET_FLAGS(0x0A) 可 10~50Hz 轮询看 estop 位]"
+      ]
+    },
+    "extension_2026_09_23": {
+      "_comment": "全指令覆盖: 网口从 14 条扩到 38 条(24 条扩展), 让 UDP 能下发控制台 124 条里的 113 条。设计基准 docs/网口指令扩展设计_2026-09-23.md。",
+      "_architecture": "热路径留类型化 opcode; 长尾走【文本透传】TEXT_EXEC(0x0B) —— 执行的就是 COM11 上同一条 ProcessCommand(), 语义零漂移, 11 条抢引脚命令的拦截天然继承。逐条加 opcode 追不上新增且会造成两份实现分叉。",
+      "_four_rules": [
+        "命令码必须 < 0x80 —— Dispatch 把 cmd>=0x80 当回包丢弃",
+        "单帧 payload <= APROTO_MAX_PAYLOAD(64) ⇒ 大数组一律【分页】",
+        "危险命令必须带 MAGIC = 0x5A5A5A5A (防误包/防扫描器误触发)",
+        "任何会阻塞主循环的命令都不上网口 —— 本工程【无看门狗】"
+      ],
+      "magic": "0x5A5A5A5A",
+      "text_exec_architecture": {
+        "flow": "TEXT_EXEC -> ArmMain_TextGate() -> ArmMain_ExecText() -> ProcessCommand()(与 COM11 同一条)",
+        "sink_switch": "main.c 的 con_sink 函数指针在执行期间从 con_write_uart 切到 con_capture, 收进 g_text_buf[2048]; 执行完【必须】切回(否则 COM11 静默失声)",
+        "gate_returns": "0=放行 / 1=交互阻塞类(空行,空格开头,#,单独 c) / 2=E-Stop 中只允许 s 和 h",
+        "max_command_chars": 58,
+        "max_output_bytes": 2048,
+        "chunk_bytes": 58,
+        "offset_unit": "字节(不是字符!) —— 控制台中文提示是 UTF-8 字节, PC 侧必须按字节拼接最后统一 decode 一次, 逐页 decode 会在分页缝上拼出坏字符",
+        "excluded_pins": "cx cp cy cz cw ps can mg mp mo ml —— 固件接住并把原因当输出回给你(flags.bit1=0, 【不算闸门拒绝】)"
+      },
+      "deviations_from_proposal": [
+        "GET_JOINT_DETAIL 每轴 10B(不是提案的 11B)",
+        "PARAM_LIST 每档 10B + i32 范围(不是提案的 6B/8B + i16); 提案的 i16 会静默截断",
+        "ZERO_RESET 只收 u8 flags(去掉关节号) —— 文本 zr 没有单轴变体",
+        "CENTER_CALIB / ZERO_RESET / PARAM_SAVE 统一【走文本透传】, 不另写第二份实现",
+        "CALIB_ENTER 【一律 NACK】, 设计上不可用",
+        "新增 TEXT_EXEC / TEXT_FETCH —— 一把钥匙覆盖 113 条控制台命令",
+        "GET_EVENTS(0x06) 码位保留但未实现; 用 GET_FLAGS 轮询代替"
+      ],
+      "verification": {
+        "python": "tests/new_commands_test.py 62 项全绿; protocol selftest + 跨语言向量",
+        "js": "971 项全绿(protocol 57 / sim 127 / bridge 14 / cross_python 404 / legacy 225 / integration 104 / udp 40)",
+        "firmware": "三构建编译全过(2026-09-23): build_net 241812 B / build_can 215096 B / build_both 244772 B",
+        "not_on_hardware": "⚠ 全程仅离线验证, 未上真机。上板前先回中位 `m 180 180 180 180 180 180 15`, 【绝不能用 M a】"
+      },
+      "_commands_canonical": "逐条字段级(含 payload/response)在 network_protocol.commands —— 本节不再重复, 只留架构与偏差说明",
+      "_per_command_notes": {
+        "0x04 GET_JOINT_DETAIL": "u8 joint(0~5|0xFF) -> 0x84: u8 n, u8 joint0, n x 10B {u16 pos_raw, i16 speed, i16 load, u8 volt(0.1V), u8 temp, u8 err, u8 ok}; 6 轴 = 62B <= 64; temp/err 的 0xFF = 这一拍丢读(不是 0 度/不是故障)",
+        "0x05 GET_LIMITS": "-> 0x85: 6 x 8B = 48B {u16 min_raw,pos_raw,max_raw,zero_raw}; 取自 Flash 校准记录(PID_JointLimits_t); zero_raw==0 ⇒ 未做 Home 零点校准(固件回落 180/raw 2048)",
+        "0x07 GET_INFO": "-> 0x87: u8 tag_len, char fw_tag[16], u8 build, u8 link, u8 nsrv = 20B; build 0=net 1=can 2=both 3=uart 4=off; ⚠ link 是 LinkCfg_ActiveMode() 的【启动冻结值】, 不是 Flash 偏好",
+        "0x0A GET_FLAGS": "-> 0x8A: u8 flags(bit0 estop/bit1 traj/bit2 stream/bit3 corr/bit4 teach_rec/bit5 teach_play), u8 run_id = 2B; ⚠ 只读变量不碰总线 ⇒ 可 10~50Hz 轮询",
+        "0x0B TEXT_EXEC": "u32 magic(无条件), char text[](NUL 结尾, <=58) -> 0x8B: u16 total, u8 flags, u16 off, u8 n, text[n]; flags bit0=输出被 2048B 截断, bit1=被安全闸门拒绝(正文是原因说明)",
+        "0x0C TEXT_FETCH": "u16 off, u8 n(1~58) -> 0x8C: 同 0x8B 格式; 取上一条 TEXT_EXEC 的后续分页",
+        "0x14 MOVE_JOINT_ONE": "u8 joint(0~5), i16 deg*10(舵机度!), u16 v*10, u16 a*10 = 7B -> ACK; ⚠ 先读全场快照只改这一轴 ⇒ 任一轴丢读则整条 ERR_READ(7)",
+        "0x17 SET_BUS_MODE": "u8 mode(0=正常 A:AABBB / 1=全A / 2=全B) -> ACK",
+        "0x18 SERVO_INIT": "u8 joint(0~5|0xFF) -> ACK; ⚠ 重写该轴 PID/限位/中位并 RESET, 同文本 i",
+        "0x22 IK_QUERY": "i16 x,y,z(mm*10), i16 pitch*10 = 8B -> 0xA2: 6 x i16 舵机度*10; 【只解不算】解算+限位检查+FK 回代, 不启动运动; err=3 不可达 / 4 超限位 / 6 回代超差",
+        "0x32 GET_GRAVITY": "-> 0xB2: i16 K(0.001 deg/mm)",
+        "0x33 GET_CORRECTION": "-> 0xB3: u8 en, u16 thr*100, u8 max_rounds, u8 pending = 5B",
+        "0x36 GET_PID": "u8 joint(0~5) -> 0xB6: u8 p, u8 i, u8 d, u8 from_eeprom = 4B; ⚠ 顺序就是 p/i/d(底层 SERVO_ReadPidEeprom 形参是 (p,d,i), API 层已换算, 不要再换); from_eeprom=0 ⇒ 读失败",
+        "0x43 PARAM_SAVE": "u32 magic -> ACK; 等价文本 F(参数落盘)",
+        "0x44 PARAM_LIST": "u8 offset -> 0xC4: u8 total, u8 n, n x 10B {u8 id, u8 type, i32 vmin*1000, i32 vmax*1000}; ⚠ 必须 i32(范围里有超 i16 的值, 压 i16 会静默截断); 2+6*10=62<=64; 值用 PARAM_READ 单取(带上会超 64B); 翻页终止 n==0 或 offset+n>=total",
+        "0x50 TEACH_LIST": "u8 idx -> 0xD0: u8 total, u8 idx, u8 valid, char name[12], u32 samples = 19B; valid=0 ⇒ tombstone",
+        "0x51 TEACH_READ": "u8 idx, u16 off, u8 n(1~5) -> 0xD1: u8 n, n x 12B(6 x u16 raw); 12*5=60<=64; 1000 点 = 200 请求 ≈ 0.3s @p50 1.61ms; ⚠ off 越界 ⇒ n=0 = 正常读完(不是错误)",
+        "0x53 TEACH_DELETE": "u8 idx -> ACK(写 tombstone)",
+        "0x54 TEACH_COMPACT": "-> ACK(回收 tombstone 空间; 会擦 Flash, 别频繁调)",
+        "0x55 TEACH_TOTAL": "-> 0xD5: u8 nfiles, u8 capacity, u32 total_samples, u32 free_bytes = 10B",
+        "0x70 CENTER_CALIB": "u32 magic -> ACK; 执行文本 `M a`(六轴推 raw 2048) ⚠ 改量纲基准, 不可逆",
+        "0x71 CALIB_ENTER": "u32 magic -> 【一律 NACK(ERR_PARAM)】⚠【设计上不可用, 不是实现漏项】cmdCalibrate() 是 for(;;) 等人在本机串口敲键; 从网口进 = 主循环永不返回, 本工程无看门狗 ⇒ 板子彻底失联。保留码位是为了让\"不可用\"在协议层面显式可见",
+        "0x72 ZERO_RESET": "u8 flags(bit0=1 同时落盘, 即 `zr save`), u32 magic -> ACK; ⚠ 文本 zr 【没有单轴变体】(一次复位全部六轴) ⇒ 协议也不给关节号",
+        "0x73 SYS_RESET": "u32 magic -> ACK 【之后再】复位(先回 ACK, 150ms 后 NVIC_SystemReset; 顺序反了上位机只会看到超时); 远程切链路完整序列: TEXT_EXEC(\"link can\") -> TEXT_EXEC(\"link save\") -> SYS_RESET"
+      }
+    },
+    "link_switch": {
+      "_comment": "运行期在 CAN / 网口 / 关 之间选择, 落 Flash 扇区11 区C。工程红线 69。",
+      "commands": {
+        "link": "打印: 本次生效 / 下次开机 / 配置来源 / 是否有未保存改动",
+        "link can|net|off": "改**偏好**(仅 RAM, 不落盘, 不立即生效)",
+        "link save": "把偏好写 Flash",
+        "_apply": "RESET 后才生效。引脚 AF 与外设是启动时一次配好的, 运行期挪不动。"
+      },
+      "default": "全关 (magic/CRC/version/mode 任一不符 => 两条都不开, 只留串口)",
+      "flash_zone": "0x080E2000 (扇区11 区C); 三区互保: A=PID / B=CAN / C=LINK",
+      "persist_note": "flash_cfg.c 由两区互保扩为三区互保, 保区缓冲 4KB->8KB; 禁止整区擦除",
+      "verification_after_reset": "敲 `h` 看首行 active=; 或网口 PING(通=网口已开)",
+      "build_variants": {
+        "_fingerprint_is_snapshot": "⚠ 下面的字节数 / md5 是**生成这份 JSON 那一刻的快照**, 不是规格。固件每次重编都会变, 而 fw-tag 可以不变( same-tag 陷阱)。交付/验收时用 `md5sum build_*/ArmControl_HAL.bin` 现算, 不要拿这份 JSON 里的值当断言。",
+        "_0924BF_live": "0924BF 终版(2026-11-03 J3 冒烟事故修复): 只编了用户板对应的 LINK=net BUS_PP=1 —— build_net_pp/ArmControl_HAL.bin 270328 B md5 13a2fb242ba8166618963cdec0fe77ea, 归档 C:/STM32Tools/fw0924bf_pp.bin。三处修复: 限位边界安全带(目标贴挡块时往弧内推 28raw≈2.5°, 防止位置环积分饱和满力矩顶死挡块烧舵机) + 未校准保护(mn/mx 全 0 不再把六轴目标打成 raw 0) + STALL 告警(连续贴限位 5s 提示松手)。数值验证 tools/verify_clamp_fix.py = PASS; cprint 长度检查 PASS。⚠ 下方四条 BE 快照是历史记录, 不是 0924BF 的指纹。",
+        "LINK=both": "fw-tag ARM-BOTH-0924BE [bus=OD(1k->3V3) map=auto]; build_both/ArmControl_HAL.bin; 273304 B; md5 436d7d227bb8649debf68b2cc23e8bae",
+        "LINK=net": "fw-tag ARM-NET-0924BE [bus=OD(1k->3V3) map=auto]; build_net/ArmControl_HAL.bin; 269936 B; md5 8d5876266f369f518e719acb362fbaae",
+        "LINK=net BUS_PP=1": "fw-tag ARM-NET-0924DE [bus=PP(74HC126) map=auto]; build_net_pp/ArmControl_HAL.bin; 0924DE 未单编, 需要时重编现算 md5 【0924CW, 2026-11-20: PS2 传输层换软件 bit-bang(≈50kHz); 链 CU 毛刺 ID 放行+rc cfg a 直发模拟 / CV MSB 滤波+开机自动模拟】",
+        "LINK=both BUS_PP=1": "fw-tag ARM-BOTH-0924DE [bus=PP(74HC126) map=auto] <- 主用; build_both_pp/ArmControl_HAL.bin; 302888 B; md5 a16bab76bc58ac9fd290cd60f93e007e; 归档 fw0924de_pp.bin 【0924DB, 2026-11-24: ①Y 0 PID 烧写外层整轮重试×3(回读失败/不匹配整套重来, 内层读重试 3→5) ②开机扫 Bus A 主臂 ID 7~12 单独一行(fi ready 可读) ③默认值改设: correction_enabled=0(存量板 A e 0 + F 保存一次) / PID J1..J6=12-0-12,15-0-50,13-0-48,18-0-15,18-0-13,10-0-10 / SP17(AP_SC_DEF_VMAX)=40 ④开机文本瘦身(Geo 三行并两行/loaded 两行并一行/AUTO link 两行并一行) ⑤DA=报警灯极性宏 ARM_ALARM_LED_ACTIVE_LOW=1 + gpio.c PE6 初始拉高; 报警灯极性宏 ARM_ALARM_LED_ACTIVE_LOW=1 —— 0924CWb 新板 PE6 低电平点亮(用户实测 S 拉高反灭灯), gpio.c PE6 初始改拉高防开机先亮一下; 0924CZ(2026-11-23): 报警灯改版 —— 软件急停(S 下发)常亮 / 丢读>30% 快闪 / 删卡死慢闪, g_soft_stop 由 i/t J 1 上力矩清除; 0924CWb, 2026-11-20: CWb=采样点提前 1 位 (DAT 流比 Mode3 提前一槽, 整字节右移实测); 0924CW, 2026-11-20: PS2 传输层软件 bit-bang 根治 —— 硬件 SPI1 328kHz(最慢档已到底) 对 2.4G 克隆接收器每字节 MSB 粘性采样错 (0x73→F3/0x41→C1/0xFF→7F/0x80→00; 0x80 中位与 0x00 满偏只差 MSB ⇒ 软件滤波原理上救不回); ESP32 慢速翻转同接收器字节全干净 ⇒ 纯时序问题。bit-bang 半周期 5µs≈50kHz, 帧 1.5ms, 50Hz 轮询预算内; rc diag 三帧改对比半周期 5/12/24µs; 引脚 PB3/PB5 改 GPIO 输出, rc pin 探测/rc cpha 改纯 GPIO 实现; 含 CU(F3+摇杆合理=模拟放行, cfg a 直发 0x44)+CV(MSB 滤波+开机自动模拟)+CT(纯轮询默认, rc cfg 0|1)+CS/CR/CQ/CO/CN; 上一版 0924CV=299160B md5 4e10af575e183fceee28b45fc7ce7c63】",
+        "LINK=net BUS_ONE=1": "fw-tag ARM-NET-0924BE [bus=PP+1Y3Y(1-wire) map=fixed(B)] <- 1Y/3Y 短接用这版; build_net_one/ArmControl_HAL.bin; 268720 B; md5 550ab7fecb99565f4ff1f7f324ac09b8",
+        "LINK=can": "fw-tag ARM-CAN-0918H; build_can/ArmControl_HAL.bin; 215096 B; md5 cd11183e6d6aa59cf81cad77c6ca3b5c",
+        "ROLE=master": "fw-tag ARM-MASTER-1030E; build_master/ArmControl_Master.bin; 244688 B; md5 4953649e61c632453f3efbb3dbee3a3f",
+        "_bus_map_auto_0924BA": "0924BA 起 JOINT_BUS[] 由 SERVO_AutoMapBuses() 按实测应答重建 (逐 ID 双总线探测), 舵机插任意座子都能用; `b` 查实际路由, `b auto` 重探测, `b 0` 回默认布局。BUS_ONE / ROLE=master 构建只有一条物理总线, 该功能关闭(map=fixed)。",
+        "_bus_map_vote_0924BB": "0924BB: AutoMap 改为三段式 + >=2/3 投票, 并修掉'离线时回落到编译期默认 A/A/A/B/B/B'的 bug —— 该 bug 会在六轴全接 B 段的板子上把 J1~J3 越探越改回 A 段空线(读位置永远打空段 ⇒ RC 丢轴; 现场指纹: `b auto` 打出 'J3 -> Bus A  MISSING', 再跑一次又变回 B, 重路由轴数在 1/7 之间乱跳)。现在 MISSING 时保持原路由不变, 且上次实测确认过的路由可自愈。同时修掉 'N axis re-routed' 的显示 bug(原先把位掩码当数量打印, J1/J2/J3 三位相加显示 7)。",
+        "_bus_map_persist_0924BC": "0924BC: 路由持久化到扇区 11 **区 G**(CFG_OFF_BUSMAP 0x6000, 16B, busmap_cfg.c)。根因 = JOINT_BUS[]/s_map_conf[] 都是 RAM, 一复位就回编译期默认 A/A/A/B/B/B; 集成板'六颗全接 B 段'时那个默认本身是错的, 于是每次上电都要重新赌一次 AutoMap, 赌输的那一轴停在空的 A 段(现场指纹: 启动日志 '[MAP] probe: online 5/6 -> ... J3:A!' + '[WARN] J3: mode read failed')。现在上电先 SERVO_LoadSavedRoute() 灌回路由, pass1 直接查正确的段。`b 0/1/2` 显式钉死后自动 SERVO_SaveRouteAll() 落盘; `b auto` 仅在路由真被改动(moved!=0)时落盘, 正常启动不擦扇区(擦整扇区有掉电连带丢 PID 的风险)。同时 arm_net.c 加了 s_an_warned: 网线没插时 'no link' 只报一次, 不再每 9s 刷屏。",
+        "_bus_scan_count_0924BD": "0924BD: 修掉启动横幅/`n` 的**误计数**。旧 ScanBothBuses() 把扫描 ID 写死成 EXPECT_A(ID1-3→Bus A)/EXPECT_B(ID4-6→Bus B), 在'六颗全接 B 段'的单线板子上必然扫成 'Bus A: 0 servo(s)  Bus B: 3 servo(s)' —— 那 3 颗不是'在线 3 颗', 而是另外 3 颗被派去查了一条空线(库里的 `boot ok: busA=0 busB=3` 同源)。现在改成按 JOINT_BUS[] 的**当前路由**分组再扫(A 段分不到 ID 就整段跳过),并把计数打印移到 AutoMap 之后、用实测 miss 位重算, `n` 也按路由分组打印`ID=x (Jy) : OK/MISSING`。`h` 的 fix 增 busscan-per-route。"
+      },
+      "same_tag_trap": "三区化是所有构建共用 ⇒ 重编后 net/can 的 md5 会变但 fw-tag 不变 ⇒ 导出版与 build/ 目录可能不一致; 别只看 tag 判断版本",
+      "build_dir_warning": "build/ArmControl_HAL.bin 只是最后一次 make 的产物, 既不是 both 也不是 net, 不要拿它烧录"
+    },
+    "mechanical": {
+      "_comment": "AUTHORITATIVE geometry 2026-09-01: official SO-ARM101 URDF + user-verified axle distances. Mirror of Core/Inc/kinematics.h.",
+      "_units": "mm for lengths, deg for angles unless noted",
+      "_coordinate_system": {
+        "convention": "right-handed; X=front, Y=left, Z=up",
+        "origin": "origin at J1 axle center ON the table surface (z measured up from table)",
+        "tool_pitch": "0=straight up, +90=horizontal forward, 180=straight down"
+      },
+      "_structure": {
+        "dof": 6,
+        "J1": "Yaw  - base horizontal rotation about vertical Z axis",
+        "J2": "Pitch - shoulder",
+        "J3": "Pitch - elbow",
+        "J4": "Pitch - wrist pitch",
+        "J5": "Roll  - wrist spin about gripper axis (does NOT change TCP position)",
+        "J6": "gripper open/close (does NOT change TCP position)"
+      },
+      "vertical_chain": {
+        "table_to_base_top": 17.13,
+        "base_top_to_J1_axle": 48.17,
+        "J1_axle_height": 65.3,
+        "J1_to_J2_vertical": 54.8,
+        "J2_axle_height": 120.1
+      },
+      "J2_horizontal_offset": {
+        "y_offset": 31.32
+      },
+      "links": {
+        "upper_arm_J2_J3": {
+          "length_mm": 116.0,
+          "neutral_tilt_deg": 13.97
+        },
+        "forearm_J3_J4": {
+          "length_mm": 135.0,
+          "neutral_tilt_deg": 87.79
+        },
+        "wrist_J4_J5": {
+          "length_mm": 62.5
+        },
+        "tool_J5_to_tcp": {
+          "length_mm": 105.3
+        },
+        "distal_J4_to_tcp": {
+          "length_mm": 167.8,
+          "formula": "62.50 + 105.30"
+        }
+      },
+      "reach": {
+        "max_reach_mm": 418.8,
+        "formula": "116.00 + 135.00 + 167.80"
+      },
+      "joint_direction": {
+        "_comment": "JOINT_DIR: +1 = increasing servo deg -> positive kinematic motion; J1 mirrored.",
+        "values": [
+          -1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "_legacy_2026_07_22_estimates": {
+        "_comment": "EARLY rough estimates, superseded. DO NOT use.",
+        "d1": 58.0,
+        "a2": 54.0,
+        "a3": 54.0,
+        "a4": 54.0,
+        "a5": 64.0,
+        "a6": 0.0
+      }
+    },
+    "servo_offsets": {
+      "_comment": "Kinematic-zero (official Home L-shape) per joint, in servo degrees. Runtime-calibrated with 'c' Phase 1. Default 180.0 deg / raw 2048 if uncalibrated.",
+      "default_deg": 180.0,
+      "default_raw": 2048,
+      "raw_to_deg_formula": "servo_deg = raw / 4095 * 360",
+      "deg_to_raw_formula": "raw = deg / 360 * 4095",
+      "conversion": {
+        "servo_deg_to_rad": "rad = JOINT_DIR[j] * (deg - OFFSET[j]) * PI/180",
+        "rad_to_servo_deg": "deg = OFFSET[j] + JOINT_DIR[j] * rad * 180/PI"
+      },
+      "_WARNING": "位姿/路点常量禁止写死舵机度(零点漂移可达 ~100deg); 一律用关节角 + 运行时换算。上位机请通过 s/f/p J 读取 rel-home 关节角。"
+    },
+    "joint_limits": {
+      "_comment": "Display/boot defaults (servo deg). AUTHORITY = raw-space JOINT_MIN_RAW/MAX_RAW (0~4095), recomputed by 'c' calibration + 'L' command. Query 'L'/'s' for live values.",
+      "_raw_authority": "joints are clamped in raw 0-4095 space (wrap-aware)",
+      "_adjustable_runtime": "Use 'L J min max' or run 'c' calibration",
+      "J1": {
+        "min": 0,
+        "max": 360,
+        "note": "yaw full turn"
+      },
+      "J2": {
+        "min": 58,
+        "max": 264,
+        "note": "shoulder pitch"
+      },
+      "J3": {
+        "min": 10,
+        "max": 177,
+        "note": "elbow; legal arc WRAPS across 0 (177->360->0->10); (10,177) is a hole"
+      },
+      "J4": {
+        "min": 83,
+        "max": 289,
+        "note": "wrist pitch"
+      },
+      "J5": {
+        "min": 180,
+        "max": 340,
+        "note": "wrist roll; 【旧内置保护带, 2026-09-16 已作废, 现由 Phase2 实测值决定】"
+      },
+      "J6": {
+        "min": 0,
+        "max": 360,
+        "note": "gripper"
+      },
+      "_display_only": "never derive raw limits from these deg values",
+      "_J3_J5_special": "【已作废 2026-09-16】J3/J5 曾用 calib_zero_raw +/- 硬编码偏移(J3_LIMIT_OFF_BACK/FRONT)。现已删除, 六轴统一采用 Phase2 手推实测值 calib_min_raw/calib_max_raw。换舵机/重锚零点后重做 Phase 2 手推标定即可。下列四个偏移值仅留档。",
+      "J3_LIMIT_OFF_BACK": -1163,
+      "J3_LIMIT_OFF_FRONT": 1090,
+      "J5_LIMIT_OFF_MIN": -1033,
+      "J5_LIMIT_OFF_MAX": 787
+    },
+    "predefined_poses": {
+      "_comment": "P 0..4. Values = JOINT angles relative to kinematic zero (official Home), deg. Firmware converts to servo deg at runtime. Source = main.c POSE_*_J.",
+      "_unit": "deg, kinematic joint angle (0 = Home pose)",
+      "P0_HOME": [
+        0.18,
+        -102.95,
+        93.54,
+        71.65,
+        -0.88,
+        -50.29
+      ],
+      "P1_FOLD": [
+        0,
+        40,
+        -70,
+        40,
+        0,
+        0
+      ],
+      "P2_READY": [
+        0,
+        0,
+        -30,
+        40,
+        0,
+        0
+      ],
+      "P3_WAVE1": [
+        45,
+        -30,
+        -80,
+        50,
+        0,
+        0
+      ],
+      "P4_WAVE2": [
+        -45,
+        -30,
+        -80,
+        50,
+        0,
+        0
+      ],
+      "_notes": "P0_HOME = 折叠收纳位 (实测 2026-09-11), 爪尖离桌 ~10mm, 由折叠位白名单保证无条件可达。J5/J6=0 表示 P 命令不改这两轴。"
+    },
+    "world_offset": {
+      "_comment": "Calibration offset: actual = model + offset. Set via 'C dx dy dz'. RAM only -> F to persist.",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "_note": "路径检查用基座坐标(p.z - WORLD_OFFSET_Z); f/g 用世界坐标。"
+    },
+    "home_dock": {
+      "_comment": "折叠位白名单(2026-09-11): 采样点 6 轴全在 POSE_HOME +/- tol 内时, 跳过 raw 限位与桌面 z 检查(立柱圆柱不豁免)。",
+      "tol_deg": 3.0,
+      "desk_margin_mm": 3.0
+    },
+    "servo_config": {
+      "ids": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "bus_assignment": [
+        "A",
+        "A",
+        "A",
+        "B",
+        "B",
+        "B"
+      ],
+      "protocol": "Feetech SCS (FF FF ID Len Inst Params CK; CK = ~(ID+Len+Inst+Params))",
+      "baud_rate": 1000000,
+      "control_mode": 0,
+      "control_mode_note": "STS3215: 0=position(servo) ← target, 1=speed(自转!), 2=PWM open-loop, 3=step. (旧 XL320 的 2=joint 约定不适用)",
+      "min_angle_limit": 0,
+      "max_angle_limit": 4095,
+      "torque_limit": 4095,
+      "lock_eeprom": 1,
+      "default_goal_speed": 200
+    },
+    "servo_registers": {
+      "_comment": "STS3215 (SCS, NOT Dynamixel) 关键寄存器",
+      "eeprom": {
+        "5": "ID",
+        "9": "MinAngle",
+        "11": "MaxAngle",
+        "21": "P",
+        "22": "D",
+        "23": "I",
+        "33": "Mode",
+        "55": "Lock"
+      },
+      "ram": {
+        "40": "TorqueEnable",
+        "41": "Accel",
+        "42": "GoalPos",
+        "44": "GoalTime",
+        "46": "GoalSpeed",
+        "48": "TorqueLimit",
+        "56": "PresentPos",
+        "69": "PresentCurrent"
+      },
+      "units": {
+        "GoalSpeed_46": "1 unit = 50 steps/s = 4.39 deg/s; write 0 = no limit",
+        "Accel_41": "1 unit = 100 steps/s^2; 0 = no limit",
+        "PresentCurrent_69": "~6.5 mA/LSB"
+      }
+    },
+    "servo_pid": {
+      "_comment": "Per-joint defaults (J1..J6). J2 has higher P for gravity torque.",
+      "defaults": {
+        "J1": {
+          "p": 16,
+          "i": 4,
+          "d": 12
+        },
+        "J2": {
+          "p": 32,
+          "i": 4,
+          "d": 12
+        },
+        "J3": {
+          "p": 16,
+          "i": 4,
+          "d": 12
+        },
+        "J4": {
+          "p": 16,
+          "i": 4,
+          "d": 12
+        },
+        "J5": {
+          "p": 16,
+          "i": 4,
+          "d": 12
+        },
+        "J6": {
+          "p": 16,
+          "i": 4,
+          "d": 12
+        }
+      },
+      "gain_range": {
+        "min": 0,
+        "max": 254
+      },
+      "persistence_chain": {
+        "K/I/D/N": "立即写舵机 RAM + 更新 STM32 缓存 (即时生效)",
+        "Y J": "把缓存 PID 烧进舵机 EEPROM (舵机掉电保留; 失力~0.6s, 托住臂)",
+        "F": "存 STM32 内部 Flash (固件开机自动下发)",
+        "X": "只恢复 RAM + 舵机 RAM 为固件默认; 两处持久化都不动"
+      }
+    },
+    "pid_tuning_guide": {
+      "_comment": "何时增大/减小。改 PID 前先 N 1~N 6 记录基线; 一次只改一个关节一个量; 改完 Y J + F 两处都存。",
+      "P_position_stiffness": {
+        "increase_when": [
+          "到点偏软",
+          "负重下沉",
+          "稳态误差大"
+        ],
+        "decrease_when": [
+          "高频抖动",
+          "嗡鸣",
+          "反馈噪声被放大"
+        ],
+        "note": "J2 默认 32(其它 16): 肩承担整臂重力"
+      },
+      "I_integral": {
+        "increase_when": [
+          "到位后缓慢下沉",
+          "反复微调到不了位"
+        ],
+        "decrease_when": [
+          "低频来回晃",
+          "超调",
+          "积分饱和"
+        ],
+        "note": "太小会永远补不掉静态误差"
+      },
+      "D_derivative": {
+        "increase_when": [
+          "到点来回荡",
+          "过冲"
+        ],
+        "decrease_when": [
+          "高频剧烈抖动",
+          "打摆"
+        ],
+        "note": "对齿隙大的关节(J3)最敏感; 2026-09-10 J3 D=30 曾致回折叠位剧烈颤抖, 恢复 D=12 即好"
+      },
+      "recommended_flow": [
+        "N J 记录基线",
+        "下沉 -> K J <P+4~8>; 抖动 -> D J <D-4> (J3优先); 慢漂 -> I J <I+2>",
+        "单关节动作验证 (a J deg / m ...)",
+        "满意 -> Y J 烧舵机 EEPROM",
+        "全部满意 -> F 存 STM32 Flash",
+        "变坏 -> X 恢复默认, 回基线重来"
+      ],
+      "_caution": "'到点顿两下'根因是尾段流式微步与舵机内部 planner 的交互(见 traj.approach_speed / traj.handoff_deg), 不是 PID。"
+    },
+    "gravity_compensation": {
+      "_comment": "J2 feedforward; 2026-09 起仅用于示教悬浮, gc.k 为占位参数。",
+      "enabled_by_default": false,
+      "k_default_deg_per_mm": 0.0,
+      "k_range_deg_per_mm": {
+        "min": 0.0,
+        "max": 0.5
+      },
+      "formula": "j2_offset = -k * horizontal_reach"
+    },
+    "adaptive_correction": {
+      "_comment": "Post-move correction targets J1-J6. Send F after tuning to persist.",
+      "enabled_by_default": true,
+      "threshold_deg_default": 2.0,
+      "threshold_deg_range": {
+        "min": 0.5,
+        "max": 10.0
+      },
+      "max_rounds_default": 10,
+      "max_rounds_range": {
+        "min": 1,
+        "max": 20
+      },
+      "corrected_joints": [
+        "J1",
+        "J2",
+        "J3",
+        "J4",
+        "J5",
+        "J6"
+      ],
+      "initial_gain": {
+        "J1": 0.2,
+        "J2": 0.5,
+        "J3": 0.3,
+        "J4": 0.2,
+        "J5": 0.2,
+        "J6": 0.2
+      },
+      "gain_range": {
+        "min": 0.0,
+        "max": 0.85
+      },
+      "adaptation": {
+        "overshoot_scale": 0.5,
+        "undershoot_scale": 1.25,
+        "stall_scale": 1.4,
+        "oscillation_trigger_count": 2,
+        "stall_p_trigger_count": 2,
+        "stall_i_trigger_count": 3,
+        "auto_d_step": 4,
+        "auto_d_max": 32,
+        "auto_p_step": 8,
+        "auto_p_max": 64,
+        "auto_i_step": 2,
+        "auto_i_max": 16
+      },
+      "start_delay_ms": 500,
+      "save_command": "F",
+      "load_on_boot": true,
+      "flash_record_version": 2
+    },
+    "teach_zero_force": {
+      "_comment": "混合模式(2026-09 定稿): J2/J3/J4 进 Mode2 开环力控; J1/J5/J6 保持 Mode0 + Torque OFF(真 free)。",
+      "joints_pwm": [
+        "J2",
+        "J3",
+        "J4"
+      ],
+      "joints_free": [
+        "J1",
+        "J5",
+        "J6"
+      ],
+      "gain": {
+        "J1": 0,
+        "J2": 6,
+        "J3": 6,
+        "J4": 6,
+        "J5": 0,
+        "J6": 0
+      },
+      "damp": {
+        "J1": 0,
+        "J2": 3,
+        "J3": 3,
+        "J4": 3,
+        "J5": 0,
+        "J6": 0
+      },
+      "cap": {
+        "J1": 100,
+        "J2": 100,
+        "J3": 40,
+        "J4": 100,
+        "J5": 100,
+        "J6": 100
+      },
+      "deadband": 20,
+      "_notes": [
+        "gain 单位 x0.1 duty/mm, 质量加权质心模型",
+        "J3 cap=40 防 9-01 损伤减速箱共振",
+        "duty=0 时输出 ±2 交替 dither 避开驱动芯片死区"
+      ]
+    },
+    "communication": {
+      "console": {
+        "uart": "USART6",
+        "tx_pin": "PC6",
+        "rx_pin": "PC7",
+        "alternate_function": "AF8",
+        "baud_rate": 115200,
+        "lin_ending": "CRLF recommended (see console_contract)"
+      },
+      "bus_a": {
+        "uart": "USART3",
+        "tx_pin": "PB10",
+        "rx_pin": "PB11",
+        "direction_pin": "PE8",
+        "baud_rate": 1000000,
+        "joints": [
+          "J1",
+          "J2",
+          "J3"
+        ]
+      },
+      "bus_b": {
+        "uart": "UART5",
+        "tx_pin": "PC12",
+        "rx_pin": "PD2",
+        "direction_pin": "PE10",
+        "baud_rate": 1000000,
+        "joints": [
+          "J4",
+          "J5",
+          "J6"
+        ]
+      },
+      "timeouts_ms": {
+        "ping": 50,
+        "read": 100,
+        "write": 100,
+        "reboot_delay": 600
+      },
+      "_tx_blocking_note": "cprint 是阻塞发送, 115200 下约 87us/字符(100 字符约 9ms); 高频打印会占用主循环, 轮询周期不要过小"
+    },
+    "trajectory": {
+      "tim2_interrupt_hz": 2000,
+      "trajectory_update_hz": 200,
+      "tick_divider": 10,
+      "default_max_speed_deg_s": 30.0,
+      "default_acceleration_deg_s2": 60.0,
+      "m_command_acceleration_factor": 2.0,
+      "min_speed_deg_s": 5.0,
+      "max_speed_deg_s": 300.0,
+      "swing_default_count": 3,
+      "swing_max_count": 20,
+      "sweep_speed_deg_s": 30.0,
+      "profile": "seven-segment jerk-limited S-curve"
+    },
+    "ik_solver": {
+      "method": "Decoupled CCD (multi-start) + analytical 2R",
+      "theta1": "atan2(y,x) analytical",
+      "theta2_to_5": "CCD in vertical plane",
+      "theta6": "target_pitch - sum(theta2..5)",
+      "ccd_max_iterations": 100,
+      "ccd_convergence_mm": 0.5,
+      "ccd_start_configs": 5,
+      "ik_fail_threshold_mm": 1.0,
+      "fk_verify_max_error_mm": 5.0
+    },
+    "runtime_parameter_table": {
+      "_comment": "Exact LP/SP parameter mirror (Core/Src/arm_params.c). SP writes RAM only; F persists. Table length is fixed at 24 entries - do not add entries casually (would invalidate the Flash record).",
+      "list_command": "LP",
+      "set_command": "SP <id> <value>",
+      "reset_ram_to_defaults_command": "X",
+      "save_to_flash_command": "F",
+      "range_behavior": "Values outside min/max are clamped.",
+      "params": [
+        {
+          "id": 1,
+          "name": "ik.converge_mm",
+          "type": "float",
+          "default": 0.5,
+          "min": 0.1,
+          "max": 5.0,
+          "unit": "mm",
+          "desc": "CCD convergence threshold"
+        },
+        {
+          "id": 2,
+          "name": "ik.max_iter",
+          "type": "int",
+          "default": 100,
+          "min": 10,
+          "max": 500,
+          "unit": "iter",
+          "desc": "Max CCD iterations per start"
+        },
+        {
+          "id": 3,
+          "name": "ik.fail_mm",
+          "type": "float",
+          "default": 1.0,
+          "min": 0.5,
+          "max": 10.0,
+          "unit": "mm",
+          "desc": "IK failure threshold"
+        },
+        {
+          "id": 4,
+          "name": "ik.fk_verify_mm",
+          "type": "float",
+          "default": 5.0,
+          "min": 1.0,
+          "max": 20.0,
+          "unit": "mm",
+          "desc": "Post-move FK verification tolerance"
+        },
+        {
+          "id": 16,
+          "name": "sc.tj",
+          "type": "float",
+          "default": 0.15,
+          "min": 0.02,
+          "max": 0.5,
+          "unit": "s",
+          "desc": "Jerk transition time"
+        },
+        {
+          "id": 17,
+          "name": "sc.def_vmax",
+          "type": "float",
+          "default": 25.0,
+          "min": 5.0,
+          "max": 300.0,
+          "unit": "deg/s",
+          "desc": "Default max motion speed (m 命令省略 v 时用它; 固件帮助文本误写 30)"
+        },
+        {
+          "id": 18,
+          "name": "sc.def_accel",
+          "type": "float",
+          "default": 80.0,
+          "min": 10.0,
+          "max": 600.0,
+          "unit": "deg/s2",
+          "desc": "Default acceleration"
+        },
+        {
+          "id": 19,
+          "name": "sc.v_min",
+          "type": "float",
+          "default": 5.0,
+          "min": 1.0,
+          "max": 50.0,
+          "unit": "deg/s",
+          "desc": "Allowed minimum commanded speed"
+        },
+        {
+          "id": 20,
+          "name": "sc.v_max",
+          "type": "float",
+          "default": 300.0,
+          "min": 50.0,
+          "max": 300.0,
+          "unit": "deg/s",
+          "desc": "Allowed maximum commanded speed"
+        },
+        {
+          "id": 21,
+          "name": "sc.accel_factor",
+          "type": "float",
+          "default": 2.0,
+          "min": 1.0,
+          "max": 4.0,
+          "unit": "ratio",
+          "desc": "When acceleration omitted: a = v * factor"
+        },
+        {
+          "id": 32,
+          "name": "gc.k",
+          "type": "float",
+          "default": 0.0,
+          "min": 0.0,
+          "max": 0.5,
+          "unit": "deg/mm",
+          "desc": "J2 gravity feedforward (teach only now)"
+        },
+        {
+          "id": 33,
+          "name": "corr.enabled",
+          "type": "uint8",
+          "default": 1,
+          "min": 0,
+          "max": 1,
+          "unit": "0/1",
+          "desc": "Adaptive correction enable"
+        },
+        {
+          "id": 34,
+          "name": "corr.threshold",
+          "type": "float",
+          "default": 2.0,
+          "min": 0.5,
+          "max": 10.0,
+          "unit": "deg",
+          "desc": "Correction convergence threshold"
+        },
+        {
+          "id": 35,
+          "name": "corr.max_rounds",
+          "type": "uint8",
+          "default": 10,
+          "min": 1,
+          "max": 20,
+          "unit": "rounds",
+          "desc": "Max correction rounds"
+        },
+        {
+          "id": 36,
+          "name": "corr.gain_j1",
+          "type": "float",
+          "default": 0.2,
+          "min": 0.0,
+          "max": 0.85,
+          "unit": "ratio",
+          "desc": "Initial correction gain J1"
+        },
+        {
+          "id": 37,
+          "name": "corr.gain_j2",
+          "type": "float",
+          "default": 0.5,
+          "min": 0.0,
+          "max": 0.85,
+          "unit": "ratio",
+          "desc": "Initial correction gain J2"
+        },
+        {
+          "id": 38,
+          "name": "corr.gain_j3",
+          "type": "float",
+          "default": 0.3,
+          "min": 0.0,
+          "max": 0.85,
+          "unit": "ratio",
+          "desc": "Initial correction gain J3"
+        },
+        {
+          "id": 39,
+          "name": "corr.gain_j4",
+          "type": "float",
+          "default": 0.2,
+          "min": 0.0,
+          "max": 0.85,
+          "unit": "ratio",
+          "desc": "Initial correction gain J4"
+        },
+        {
+          "id": 40,
+          "name": "corr.gain_j5",
+          "type": "float",
+          "default": 0.2,
+          "min": 0.0,
+          "max": 0.85,
+          "unit": "ratio",
+          "desc": "Initial correction gain J5"
+        },
+        {
+          "id": 41,
+          "name": "corr.gain_j6",
+          "type": "float",
+          "default": 0.2,
+          "min": 0.0,
+          "max": 0.85,
+          "unit": "ratio",
+          "desc": "Initial correction gain J6"
+        },
+        {
+          "id": 42,
+          "name": "traj.approach_speed",
+          "type": "int",
+          "default": 30,
+          "min": 0,
+          "max": 4095,
+          "unit": "1=4.39d/s",
+          "desc": "Approach-segment servo speed"
+        },
+        {
+          "id": 43,
+          "name": "traj.approach_frac",
+          "type": "float",
+          "default": 0.05,
+          "min": 0.0,
+          "max": 0.25,
+          "unit": "ratio",
+          "desc": "Approach segment fraction of travel"
+        },
+        {
+          "id": 44,
+          "name": "servo.accel",
+          "type": "int",
+          "default": 10,
+          "min": 0,
+          "max": 254,
+          "unit": "-",
+          "desc": "Servo internal acceleration (needs 'i' to re-apply)"
+        },
+        {
+          "id": 45,
+          "name": "traj.handoff_deg",
+          "type": "float",
+          "default": 0.0,
+          "min": 0.0,
+          "max": 15.0,
+          "unit": "deg",
+          "desc": "Tail handoff threshold (0=off; 上限 15 不是 90)"
+        }
+      ]
+    },
+    "gpio": {
+      "e_stop": {
+        "pin": "PE11",
+        "active": "low",
+        "_note": "激活时只允许 s 和 h"
+      },
+      "limit_switches": {
+        "J1": "PG0",
+        "J2": "PG1",
+        "J3": "PG2",
+        "J4": "PG3",
+        "J5": "PG4",
+        "J6": "PG5",
+        "active": "low"
+      },
+      "leds": {
+        "red": "PC5",
+        "green": "PC4",
+        "blue": "PA5"
+      },
+      "buzzer": {
+        "pin": "PB5",
+        "active": "high"
+      },
+      "swd_debug": {
+        "swdio": "PA13",
+        "swclk": "PA14",
+        "_warning": "Do NOT repurpose!"
+      }
+    },
+    "clock": {
+      "hse_mhz": 8,
+      "pll_m": 8,
+      "pll_n": 336,
+      "pll_p": 2,
+      "pll_q": 7,
+      "sysclk_mhz": 168,
+      "apb1_mhz": 42,
+      "apb2_mhz": 84,
+      "tim2_arr": 499,
+      "tim2_interrupt_hz": 2000
+    },
+    "can_control": {
+      "enabled": true,
+      "peripheral": "CAN1 (bxCAN)",
+      "bitrate_kbit_s": 500,
+      "pins": {
+        "rx": "PB8",
+        "tx": "PB9",
+        "_alternates": "CAN2 = PB12/PB13 (cx 2 运行时切换); CAN1 引脚对可 cx pa(PA11/PA12) / cx pb(PB8/PB9)"
+      },
+      "standard_id": {
+        "host_to_arm": "0x100 + node_id",
+        "arm_to_host": "0x180 + node_id",
+        "status_event": "0x280 + node_id",
+        "test": "0x7E0"
+      },
+      "protocol": "Shared binary control protocol; CAN 2.0A 11-bit; 8-byte payload segmentation",
+      "hardware_requirements": [
+        "3.3V CAN transceiver (e.g. SN65HVD230)",
+        "120 ohm termination at each end",
+        "CAN 与网口物理互斥: PB13 = ETH_TXD1 = CAN2_TX"
+      ],
+      "config": "can [node N(1~15)|baud K(100/125/250/500/1000)|hb ms(0=off)|save|reset|stat clr]",
+      "forensics_chain": {
+        "_order": "由外向内, 一步不过不跳步 (2026-09-14 ~ 09-18 现场固化)",
+        "cp": "引脚自己: RX 加下拉仍读 1 = 收发器已上电且接上; TX 推挽自检",
+        "cy": "总线上有没有活动 (采 MSR.RX; 全高=毫无活动)",
+        "cz": "发侧通路: 连发 N 帧 + 全程采 RX, 出现显性 = 模块在驱动差分对",
+        "cw": "外环: TX 当 GPIO 驱动显性并读回 RX —— 补 cp 的盲区(TXD 断线 cp 照样全绿)",
+        "ps": "引脚嗅探: 11 只候选脚逐个连采, 找★活动信号(判断卡插在 CAN1 还是 CAN2)",
+        "cx": "接口切换: 找到在 CAN2 就直接 `cx 2`, 不用重烧",
+        "ct": "帧计数对拍: A 板 ct 50 发, B 板 ct 看收到几帧",
+        "cn": "状态: hw init / TEC REC LEC / 原始寄存器 / RX 引脚电平"
+      },
+      "note": "CAN 有硬件 CRC + 自动 ACK, 判据不会被悬空脚蒙混; 但分片可能乱序, 主机必须重组"
+    },
+    "leader_follower": {
+      "_comment": "2026-09-08 ~ 09-22 的主从链路成果。三条路线并存, 数据流都在 ArmApi_StreamJoints() 这一条通路上。",
+      "roles": {
+        "master": "主臂 (ARM_MASTER_BUILD); 单总线 UART5(PC12/PD2), 无 74HC126D; 6 颗 ID 1..6 并联",
+        "slave": "从臂; 总线A(USART3 PB10/11) ID1~3 + 总线B(UART5 PC10/11) ID4~6; 74HC126D 半双工"
+      },
+      "command_semantics": {
+        "lk": "主从链路诊断 (UART4 PA0/PA1): 字节/帧/CRC 错/uart 硬件错/PC-relay 统计/逐轴 clamp",
+        "ms": "两块板通用: 打 6 轴 rel-home 逻辑角 + 主臂发送计数 (对拍两臂校准一致性)",
+        "mf 0|1": "主臂: 暂停/恢复 0x13 直连转发 (上电默认 ON)",
+        "ma 0|1": "主臂: 1=上力矩+放行动作命令, 0=松力矩手拖 (上电默认 0)",
+        "sf 0|1": "从臂: 0=退出流模式并忽略后续流帧(原地自锁), 1=恢复 (上电默认 ON)",
+        "sp Hz": "主臂: 按节拍往控制台吐 `#P a1..a6`(逻辑角×10) —— PC 中转的输出端",
+        "#P ...": "从臂: PC 中转的接收端; 与 0x13 同通路、同 sf 门闩/限位/跳变保护; 成功时完全静默"
+      },
+      "three_routes": {
+        "A_firmware_direct": {
+          "how": "两板 PA0(TX)<->PA1(RX) 交叉接线, 主臂自己转发 0x13 帧",
+          "pc_role": "只发开关命令: mf / ma / sf / lk",
+          "status": "⚠ 曾因 PA0/PA1 焊点不良长期不通 (主从臂联调步骤 §13) ⇒ 用 lk 看字节数判定, 命令不回错 ≠ 线通"
+        },
+        "B_pc_relay_serial": {
+          "how": "主臂 `mf 0` + `sp 30` 吐 #P 行 -> PC 原样喂给从臂",
+          "pc_role": "纯中转, 一根线不接两臂",
+          "prereq": [
+            "主臂 mf 0 (否则两路各读一遍总线, 负载翻倍)",
+            "从臂 sf 1",
+            "从臂 ec 0 (静音, 省发送线)"
+          ],
+          "sdk": "arm_sdk.PcRelay (即 tools/pc_relay.py 的 SDK 化)"
+        },
+        "C_network_teleop": {
+          "_preferred": true,
+          "how": "PC 以 50Hz 读主臂 GET_STATUS -> 逻辑角 -> 限速 -> 从臂 STREAM_JOINTS",
+          "pc_role": "唯一的中枢; 往返 p50 1.61ms, 50Hz 余量 15×",
+          "sdk": "arm_sdk.TeleopSession",
+          "why_best": "不用接线、不用 PC 中转串口、延迟最低、PC 侧可无损录制"
+        }
+      },
+      "rc_remote": {
+        "hardware": "RadioLink AT9S Pro + R9DS (SBUS/PPM 到定时器输入捕获)",
+        "mapping": {
+          "左杆上下": "Z 速度",
+          "左杆左右": "J5 速度",
+          "右杆上下": "X 速度",
+          "右杆左右": "Y 速度",
+          "不复位拨杆": "J6 开合",
+          "SwA": "使能"
+        },
+        "must_use": "ArmApi_StreamJoints() (MoveCartesian() 会把 J5/J6 归零)",
+        "failsafe_trap": "丢控后接收机**继续输出预设行程** ⇒ 旧'新鲜度'判据失效, X/Y/Z 的 F/S 必须设中位",
+        "commands": "rc / rc reset / rc reinit / rc mid / rc raw / rc watch"
+      },
+      "hard_constraints": [
+        "从臂 sf 默认 1; 对端发流会盖轨迹 ⇒ 想单独演示先 sf 0",
+        "E-Stop 不自锁(实时读 PE11) ⇒ 人别停在扫过区",
+        "烧录/复位必丢力矩、臂下沉(实测两次同值 J2≈76.4 / J3≈270.9, 距限位仅 1.3°/0.1°)",
+        "上运动测试前先回中位: `m 180 180 180 180 180 180 15`; **绝不能用 `M a`**(那是标定, 会废量纲基准)",
+        "前置看 `zi` (Home 零点是否被示教模式误触 '0' 污染)"
+      ],
+      "runtime_limits_servo_deg": {
+        "J1": [
+          63,
+          303
+        ],
+        "J2": [
+          75,
+          284
+        ],
+        "J3": [
+          76,
+          271
+        ],
+        "J4": [
+          71,
+          284
+        ],
+        "J5": [
+          12,
+          351
+        ],
+        "J6": [
+          138,
+          266
+        ]
+      },
+      "full_envelope_test": "六轴全动包线(中位起/T12s/零拒帧): J1~J4 ±20° / J5 ±70° / J6 ±33°"
+    },
+    "teleop_teach": {
+      "teleop": {
+        "sdk_class": "arm_sdk.TeleopSession",
+        "data_path": "leader GET_STATUS(舵机度) -> JointCalib.to_logical -> gain/reverse/软限位 -> 限速 -> follower STREAM_JOINTS(逻辑角)",
+        "tracking_mode": {
+          "hold (默认)": "不动从臂, 按**位移增量**跟随: target = foll_ref + gain*sign*(lead - lead_ref) ⇒ 两臂起始姿态不同也安全",
+          "align": "先 MOVE_JOINTS 把从臂对齐到主臂当前姿态, 再按增量跟随 (要求两臂 Home 基准一致)"
+        },
+        "slew_deg_per_s_default": 240.0,
+        "_slew_why": "50Hz 下 240°/s = 4.8°/帧, 离固件 25° 拒帧门限 5× 余量 ⇒ 从源头避免自锁冻结",
+        "guards": {
+          "leader_read_fail": "hold 上一有效目标(保住流不超时) + 超过 link_loss_timeout_s 抛 TeleopLinkLost 并停臂",
+          "estop": "主臂 flags.bit0 ⇒ 立即 STOP 从臂并抛 TeleopAbort(estop_trips=False 可只观察)",
+          "hz_low": "hz<3 直接拒绝启动",
+          "non_idempotent": "STREAM_JOINTS/MOVE_JOINTS 丢帧不重发(重发会重复规划)"
+        },
+        "stats": "frames/sent/held/leader_fail/ack_ok/ack_limit/ack_estop/soft_clamped/slew_clamped/fps"
+      },
+      "teach": {
+        "pc_side": {
+          "sdk_class": "arm_sdk.TeleopTeachSession + TeachRecorder + Trajectory",
+          "limit": "无上限 (固件侧才有 80s/4000 点限制)",
+          "units": "一律逻辑角 (rel-home, deg) —— 与 STREAM_JOINTS/#P 同量纲",
+          "formats": {
+            "json": "单文件带元数据(推荐)",
+            "jsonl": "一行一帧",
+            "csv": "t,J1..J6 表头 (最通用)",
+            "npz": "numpy/LeRobot (需 numpy)"
+          },
+          "transforms": [
+            "resample(hz)",
+            "smooth(window)",
+            "slice(t0,t1)",
+            "scale_time(factor)"
+          ],
+          "validate": "点数/时长/采样率/单帧最大跳变(>25° 报警)/软限位越界"
+        },
+        "firmware_side": {
+          "sdk_class": "arm_sdk.FirmwareTeach",
+          "enter": "teach rec = **只读跟录**(不碰舵机, 不松力矩) —— PC 中转遥操时录从臂用",
+          "save": "save <name> (<=11 字符 A-Za-z0-9_-), 阻塞 1~3s 写 Flash",
+          "play": "play <name|#> [loop] / play (无参 = 回放未存盘临时录音)",
+          "files": "files / list 列表; del 删(墓碑); compact 回收",
+          "limits": "50Hz × 4000 点 ≈ 80s",
+          "lose_recording_traps": [
+            "rec clear",
+            "直接断电",
+            "再进一次 teach"
+          ]
+        },
+        "playback": {
+          "sdk_class": "arm_sdk.PlaybackSession",
+          "how": "Trajectory -> resample(cfg.hz) -> STREAM_JOINTS, 补偿式节拍",
+          "safety": "单帧步长恒 ≤ 25°*0.8; 每 estop_check_s 查一次状态; dry_run = 一帧不发",
+          "speed_loop": "speed 可缩放时间轴; loop=0 无限循环"
+        }
+      }
+    },
+    "host_sdk": {
+      "_comment": "sdk_package/arm_sdk —— 纯标准库即可跑(串口才需 pyserial, npz 才需 numpy)。",
+      "install": "pip install -e sdk_package   (或直接 `PYTHONPATH=sdk_package`)",
+      "modules": {
+        "protocol.py": "逻辑包 + CRC + 定点编解码 + 三角载(UDP/Serial/CAN) + 分帧器 + 关节标定",
+        "transport.py": "Transport 抽象 / NetTransport / SerialTransport / make_transport",
+        "sim.py": "SimArmTransport 内存假臂(38 条命令全语义, 含拒帧/自锁/静默钳制/文本闸门) —— 无硬件也能开发",
+        "client.py": "ArmClient: SEQ 配对 + RX 泵线程 + 超时重发策略 + 41 条高层 API + open_arm(URI)",
+        "kinematics.py": "FK/IK 参考实现 (与固件同几何参数)",
+        "console.py": "ConsoleClient: 串口文本控制台(含异步行分流、#P 位置流)",
+        "teleop.py": "TeleopSession / FirmwareLink / PcRelay",
+        "teach.py": "Trajectory / TeachRecorder / TeleopTeachSession / PlaybackSession / FirmwareTeach"
+      },
+      "uris": [
+        "net://192.168.7.120:5000",
+        "serial:///dev/ttyUSB0",
+        "sim://"
+      ],
+      "cli": "python -m arm_sdk.cli  (或 pip 安装后的 `armctl`)",
+      "self_tests": [
+        "python -m arm_sdk.protocol",
+        "python -m arm_sdk.teleop",
+        "python -m arm_sdk.teach",
+        "python tests/integration_test.py"
+      ],
+      "no_fallback_rule": "所有'读失败'一律 None/异常, 绝不填上次值或 0"
+    },
+    "host_integration_guide": {
+      "_comment": "上位机对接建议。优先用网口(见 network_protocol); 串口是保底通道+文本控制台。",
+      "preferred_transport": "net (UDP :5000); 见 network_protocol",
+      "fallback_transport": "serial (USART6, 文本 + AA55 二进制同口)",
+      "serial": "115200 8N1, no flow control; open then flush input",
+      "line_ending": "统一 \\r\\n (文本命令); 二进制帧自带 LEN+CRC 不需要行尾",
+      "read_timeout_ms": {
+        "simple": "200~500",
+        "motion": "5000~30000",
+        "udp_default": 300
+      },
+      "parse": "按行读; 丢弃回显行/'> '/[RUN] 日志; 用关键词判定成功失败",
+      "success_keywords": [
+        "OK",
+        "Saved",
+        "Stopped",
+        "complete"
+      ],
+      "failure_keywords": [
+        "Usage:",
+        "FAIL",
+        "FAILED",
+        "reject",
+        "NACK",
+        "unreachable",
+        "out of range"
+      ],
+      "safety": "运动前先 s/f 确认姿态; i/Y/B/W 等会失力或长跑的命令要二次确认",
+      "reconnect": "重连后先发 h 或 s 探活 (网口先 PING)",
+      "persist_reminder": "改完要 F(存 Flash), PID 还要 Y J(存舵机 EEPROM), 链路偏好要 link save",
+      "boot_checklist": [
+        "1. 敲 h 看 fw-tag + active= 链路",
+        "2. 网口: PING; 串口: 看是否出现 '> ' 提示符",
+        "3. `zi` 看零点是否被污染",
+        "4. `s` / GET_STATUS 看 6 轴是否全读到 (有读失败先排总线)",
+        "5. 运动中先回中位 `m 180 180 180 180 180 180 15`"
+      ],
+      "traps": {
+        "silent_clamp": [
+          "MOVE_JOINTS 目标角",
+          "PARAM_WRITE 值",
+          "STREAM_JOINTS 单轴"
+        ],
+        "ack_means_accepted_not_moved": "MOVE_JOINTS err=0 只代表'命令收下'",
+        "two_angle_systems": "舵机度 vs 逻辑角 —— 混用是头号 bug 源",
+        "read_fail_sentinel": "-32768; read_ok=0 时位姿字段无效",
+        "no_reply": "6 种情况一个字节都不回, 见 network_protocol.no_reply_cases"
+      }
+    },
+    "commands_meta": {
+      "_notice": "JSON 不支持 // 注释, 沿用 _ 开头的伪注释约定。命令本体在 commands 数组。",
+      "_changelog_2026_11_24_0924DE": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924DE (build_both_pp, 302888B, md5 a16bab76bc58ac9fd290cd60f93e007e, 归档 fw0924de_pp.bin)",
+        "added": [
+          "ARM_ALARM_LED_ACTIVE_LOW 编译宏 (报警灯极性, 新板=1 低电平点亮, 旧板置 0)",
+          "开机扫 Bus A 主臂 ID 7~12 -> 'Bus A master (ID 7-12): N online <- fi ready' 单独一行",
+          "ArmApi_FwTag()/FwTagBuild() 唯一出口; RUN-START 头加 tag= 字段 (根治 __DATE__ 陈旧: 未重编的 .c 停在旧日期, 版本判别以 tag 为准)",
+          "ArmStall_Tick 武装门 (0924DD: 主循环首次推进前不记卡死, 根治开机扫描>3s 被 TIM2 误记 phase=1 假 STALL)",
+          "主臂扫 7~12 对漏扫 ID 补一轮合并 ping+升序 (0924DD: 总线随机丢帧每次开机漏的 ID 不同, 显示可信度)",
+          "开机显示 0924DE 用户定案: 本臂 6 轴全在 B 时删 'Bus A: 0' 整行, master 行顶上且恒列 ID 清单; 删 [BOOT] 无故障提示行 ([FAULT]/[STALL] 有事才说话)",
+          "SERVO_ApplyPidToEeprom 外层整轮重试×3 (0924DB: Y 0 偶发 FAIL 根治)"
+        ],
+        "modified": [
+          "默认 correction_enabled=0 (开机默认关自适应修正; 存量板 A e 0 后敲 F 保存)",
+          "默认 PID J1..J6 = 12/0/12, 15/0/50, 13/0/48, 18/0/15, 18/0/13, 10/0/10 (G 表用户认可值)",
+          "SP 17 (sc.def_vmax) 默认 25→40 deg/s (用户定案 SP 17 40)",
+          "LED_Alarm() 按 ARM_ALARM_LED_ACTIVE_LOW 反相输出 (新板 PE6 低电平点亮, 用户实测 S 拉高反灭灯实锤)",
+          "gpio.c PE6 初始电平 RESET→SET (低有效下防开机先亮一下)",
+          "开机文本瘦身: Geo pref 三行→两行 / Flash loaded 两行→一行 / AUTO link 两行→一行",
+          "'Bus A: 0' 行加语义标注 '(本臂 6 轴全在 B; 主臂见下行)' (count_a=0 且主臂在线时)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_05_0924CA": {
+        "_deprecated_2026_11_05": "板间遥操整体停用(用户决策): ms/lk/mf/sp/#P/ma/sf 七条 -> proto 标 (已停用), 由 fi 板内遥操取代; 取证工具 ml/mg/mp/mo 保留",
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-NET-0924CA (build_net_pp, 285916B, md5 749787563e6eb941e5070891773cc0c5)",
+        "added": [
+          "t 6 0|1 (0924CA: 全部六轴松/紧力矩)",
+          "L clear (0924BY: 撤销 L 手动限位, 回校准/默认)",
+          "L J min max 持久化 (0924BY: 设值即存 flash 区 I 0x8000, 重启恢复)",
+          "fi / fi diag / fi spd / fi acc (0924BK~BQ: 板内遥操命令族)",
+          "zf here (0924BW: 桌面下限实测标定, 吸收 FK ~10mm 偏差)",
+          "zf on|off (0924BV: 遥操桌面限位开关)",
+          "zf clear (0924BV: 撤销标定)"
+        ],
+        "modified": [
+          "t J 0|1 (0924CA: notes 标明 J 为 0-based 轴号, 字母 J 会被 atoi 成 0)",
+          "L J min max (0924BY: RAM-only → 存 flash 区 I, 优先级 手动>校准>默认)",
+          "构建快照 LINK=net BUS_PP=1 (0924BE→CA: fw-tag/大小/md5 更新)"
+        ],
+        "removed": [
+          "fi margin (0924BZ: 边界安全带整体删除, 遥操只受限位约束)",
+          "zf <mm> 数字版 (0924BX: FK 模型偏差 ~10mm 对不上, 用 zf here)"
+        ]
+      },
+      "_changelog_2026_11_20_0924CW": {
+        "date": "2026-11-20",
+        "firmware": "ARM-BOTH-0924CZ (build_both_pp, 299172B, md5 6c3dc6615697a5b31d6db29f86d438d3, 归档 fw0924cw_pp.bin)",
+        "changes": [
+          "★PS2 传输层换软件 bit-bang (0924CW/CWb): CWb 补采样点提前 1 位 (0x73→0x39 整字节右移 = DAT 流比 Mode3 提前一槽; 真实 ID=0x73, 摇杆全中位, 数据质量完美)。 硬件 SPI1 @APB2 84MHz/256=328kHz 已是最慢档, 对 2.4G 克隆接收器每字节 MSB 粘性采样错 (实测 0x73→F3 / 0x41→C1 / 0xFF→7F / 0x80→00; 关键: 0x80 中位与 0x00 满偏只差 bit7, 软件滤波原理上无法区分); ESP32 慢速 GPIO 翻转同接收器字节全干净 ⇒ 纯时序问题。",
+          "bit-bang 半周期 5µs (≈50kHz), 72bit 帧约 1.5ms, 50Hz 轮询预算内; LSB 先行, Mode3 默认 (rc cpha 0|1 仍可切, 改为采样沿切换)。",
+          "引脚: PB3(SCK)/PB5(MOSI) 改 GPIO 推挽输出空闲高, PB4(DAT) 输入上拉; SPI1 寄存器配置整体移除; rc pin 接线探测改纯 GPIO。",
+          "rc diag 三帧改为对比位半周期 5/12/24µs (50/21/10kHz)。",
+          "链: 0924CU (毛刺 ID&0x7F 放行 + rc cfg a 直发 0x44 模拟命令旁路, cfg a 实测开出模拟) → 0924CV (MSB 跳变滤波 + 开机自动 cfg a) → 0924CW (bit-bang 根治)。"
+        ],
+        "verify": [
+          "烧后 `h` 应报 ARM-BOTH-0924CZ; `rc diag` 帧1 ID 期望干净 0x73 或 0x41 (不再有 F3/C1 毛刺)",
+          "松手摇杆四轴应稳定 ~0x7F/0x80; `rc keys` 按键/摇杆全链路实测"
+        ]
+      },
+      "_changelog_2026_11_20_0924CT": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CT (build_both_pp, 298104B, md5 15bc939529a33442efbd6a8effe57300, 归档 fw0924ct_pp.bin)",
+        "added": [
+          "★rc cfg 0|1 (0924CT): PS2 手柄配置序列开关。0=纯轮询(⭐新默认, 从不发 0x43/0x44 配置命令, 掉线不自动重配); 1=跑 SetInit 配置序列(原装手柄绿灯拉回红灯用, 克隆接收器禁用)。即时生效不用重烧; rc 总览/diag 判读文本同步"
+        ],
+        "modified": [
+          "【修改】PS2 卡 F3 处置定案 (0924CT): ESP32 直测证明 2.4G 克隆接收器对裸轮询回 ID=0x20 且按键/摇杆正常, SetInit 配置序列反而把它推进配置模式 (ID=0xF3) 且退出帧被吞 = 永久卡死 —— CS 烧录后 COM3 自主验证: reinit + 22s 观察含组合拳升级, F3 纹丝不动。故默认不发配置命令; F3 补发退出帧逃逸逻辑保留; 最可靠抢救 = 接收器断电重上电清状态"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CS": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CS (build_both_pp, 296424B, md5 3c9719b3f8227b8d5d1435f5926dcdcc, 归档 outputs/ARM-BOTH-0924CS_novib.bin)",
+        "added": [],
+        "modified": [
+          "✗删除震动命令 C_VIBMODE (0924CS, F3 真根因): 0x4D 按主流实现(PS2X 库)需 6 字节, 旧模板 {01 4D 00 00 01} 只发 5 字节 —— 字节数不合把克隆手柄配置状态机打错位, 下一条退出配置命令被当成残缺命令的尾数据吞掉 = 永久卡 ID=0xF3 (CR 组合拳也救不回; COM3 自主探查: Mode3 稳定 7F F3 5A..., Mode2 全 FF 排除时钟极性)。遥控不用震动, 直接整条删除; rc diag F3 判读文本同步 CS"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CR": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CR (build_both_pp, 296448B, md5 cb4a25f386a3d502c8b641fad5245277, 归档 outputs/ARM-BOTH-0924CR_savewin.bin)",
+        "added": [],
+        "modified": [
+          "退出配置静默保存窗口 (0924CR): ps2_config_controller 退出帧后加 HAL_Delay(50) —— 实测 CQ 把手柄拉出 F3 后只收到 1 帧 0x73 就永久沉默(ok=1 fail=673), 高度怀疑克隆手柄退出配置后要写 EEPROM 保存模拟模式, 立刻恢复 20ms 高频轮询打断保存; F3 组合拳退出后同样加保存窗; 若 CR 仍复发则嫌疑转向无线链路掉线(手柄休眠/供电)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CQ": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CQ (build_both_pp, 296440B, md5 ae549928b69f0e7e96118ba911e89265, 归档 outputs/ARM-BOTH-0924CQ_cfgdelay.bin)",
+        "added": [],
+        "modified": [
+          "配置序列帧间延时 (0924CQ, F3 根治): ps2_config_controller 四条配置命令(进配置/开模拟/震动/退出)之间各插 HAL_Delay(5) —— 背靠背零间隔是克隆手柄吞退出帧的根因 (Arduino PS2X 库同样在命令间有 delay); 仅开机/重配执行, ~20ms 不影响热路径。",
+          "F3 退出升级策略 (0924CQ): F3 分支前 4 次只补单发退出帧(侵入最小); 仍 F3 则升级为 进配置→5ms→退出 组合拳(重建干净会话再退出); 成功拉出后 s_exit_tries 归零; rc diag F3 判读文本同步 CQ 行为"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CP": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CP (build_both_pp, 296200B, md5 74eabda9cde625a999ade3435117079d, 归档 outputs/ARM-BOTH-0924CP_f3exit.bin)",
+        "added": [],
+        "modified": [
+          "F3 卡配置模式自愈 (0924CP): 新板克隆 2.4G 手柄被固件配置序列送进 config mode (ID=0xF3, rc diag 实测 7F F3 5A 7F FF 80 FF 00 FF) 后退出帧被吞, 而 fail_run 累积触发完整重配(再次进配置) ⇒ 死循环。修法: ArmRc poll 新增 F3 分支——0x5A 在位即确认手柄活着, 只补发退出帧(0x43/0x00) 200ms 节流, fail_run 保持 0 不触发重配; arm_rc.h 新增 ARM_RC_PS2_ID_CFG(0xF3); rc diag 判读加 F3 专行(接线已通非接线问题)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CO": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CO (build_both_pp, 295792B, md5 38844820bf91fe07d709d9cbb4575f0d, 归档 outputs/ARM-BOTH-0924CO_rc0x20.bin)",
+        "added": [],
+        "modified": [
+          "PS2 帧校验放行非标 ID (0924CO): 新板 2.4G 接收器 ESP32 实测 ID=0x20 (帧结构/0x5A/SELECT·R1 按键全正常, 仅 ID 不是标准 0x73)。旧运行时校验只认 0x73/0x41 ⇒ 0x20 被当坏帧丢弃。arm_rc.h 新增 ARM_RC_PS2_ID_79(0x79)/ARM_RC_PS2_ID_WLESS(0x20) 与 ARM_RC_ID_ANALOG_OK 判定宏(三者均按模拟摇杆有效处理); arm_rc.c 运行时 ok 判定放行 0x20/0x79 (绿灯 0x41 仍判坏帧自动重配); main.c rc diag 三帧校验、reinit/rc 查询的 ID 判读文本同步放行"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CN": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CN (build_both_pp, 295584B, md5 8c9310dc67d6a132962e0d9ae9cf88f6, 归档 outputs/ARM-BOTH-0924CN_ledsv2.bin)",
+        "added": [],
+        "modified": [
+          "四灯实用版语义 (0924CN 重写 0924CM): PE5 状态灯三态——力矩全关慢闪 1Hz (臂是软的可手掰) / 运动中快闪 5Hz / 力矩 ON 静止常亮; 状态源下沉驱动层 (servo_driver.c 新增 SERVO_TorqueOnCount/SERVO_LastGoalTick, SetTorque/InitJoint/四个目标写入函数统一挂钩, 上层 t/i/ma/teach/RC/fi/轨迹/回放全路径 天然覆盖); PE6 报警灯三优先级——E-STOP 常亮 > 总线丢读超标快闪 4Hz (FeedbackSampleService 10ms 节拍计数, 2s 窗失败率>30% 判差, 样本<50 不判) > 上次卡死重启慢闪 5s; PE7 通信灯改每条指令翻转一次 (流量越大闪越快), 2s 无指令自动熄灭; cmdSweep 绕过的力矩直写改走 SERVO_SetTorque"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_20_0924CM": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CM (build_both_pp, 295240B, md5 e5dd787b6dcdf9e900dbc241b4ac917a, 归档 outputs/ARM-BOTH-0924CM_leds.bin)",
+        "added": [
+          "状态指示灯四灯 (0924CM: 新板 PE4~PE7 推挽输出, 全工程此前零占用; gpio.c 初始化+main.c 服务逻辑。PE4=电源灯常亮; PE5=运行灯, 挂主循环 50Hz 轨迹节拍 0.5s 翻转=2Hz, 主循环卡死即冻结, 与 TIM2 侧 PC4 心跳互补(PC4 停=TIM2 死, PE5 停=主循环死); PE6=报警灯, 实时 E-STOP(PE11 低)常亮, 另开机 5s 内 ArmStall_WasStall() 为真叠加 1Hz 慢闪提示上次卡死重启; PE7=通信灯, ProcessCommand 入口记时刻, 1s 内收到过任一链路指令即亮)"
+        ],
+        "modified": [],
+        "removed": []
+      },
+      "_changelog_2026_11_19_0924CL": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CL (build_both_pp, 294848B, md5 644fbadbff4e5659da8e0d9891204b5f, 归档 outputs/ARM-BOTH-0924CL_clkreg.bin)",
+        "added": [],
+        "modified": [
+          "nt (0924CL: [0] 时钟寄存器直读 —— RCC->CR 的 HSEON/HSERDY/HSION/HSIRDY/PLLON/PLLRDY + HAL_RCC_GetSysClockFreq/HCLK/PCLK1/PCLK2 四路频率, 放在 MAC 初始化检查之前, MAC 没好也能打。背景: 新板 SWD 连不上(DAP open failed) 无法 openocd 读寄存器, 改走固件串口取证; 判读: HSERDY=1⇒外部晶振起振, HCLK=168MHz⇒满速, HSERDY=0 且 SYSCLK=168⇒HSI-PLL 供源)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_18_0924CK": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CK (build_both_pp, 294432B, md5 09d728febc2e0f5c4490dfc3a1210d2d, 归档 outputs/ARM-BOTH-0924CK_pherelim.bin)",
+        "added": [],
+        "modified": [
+          "P here (0924CK: 逐轴标定限位校验 —— 读到的当前位姿逐轴过 JOINT_MIN/MAX_RAW (未校准轴 mn==mx==0 跳过), 超限拒存并打印 轴号/实际角度/限位区间, 提示两条出路: 摆回限位弧内重标, 或 c 向导 x 进 Phase 2 重校该轴限位把折叠行程包进去。背景: 手折时力矩 OFF 软件限位不生效, 2026-11-18 现场 J6 手折到 142.3°=raw1618 < min 1638, 超限位姿存 flash 后 P 0 安全路径规划全候选失败 NO safe segment plan)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_13_0924CJ": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CJ (build_both_pp, 293968B, md5 12cc90adb1a47ba1d3599258839fb2be, 归档 outputs/ARM-BOTH-0924CJ_fismooth.bin)",
+        "added": [
+          "fi_partial 统计 (0924CJ: 含丢读轴的降级帧计数, fi/fi diag 打出 —— 总线丢读健康度指标, 上拉电阻修复后应趋近 0)"
+        ],
+        "modified": [
+          "fi 跟随循环 (0924CJ: 部分帧降级下发 —— 单轴 10 试全败改沿用该轴上次成功值跳下一轴; 帧截止 14ms 改已读轴用新值/未读轴沿用旧值照常下发; 旧版弃整帧 ⇒ 丢读总线 25~70% 下 40Hz 目标流断成突发, 误差驱动速度猛追-急停往复 = 遥操卡顿真根源; 种子期 fi 1 后首轮 6 轴读齐前仍全有全无)",
+          "fi 默认节拍 (0924CJ: 25ms=40Hz -> 20ms=50Hz, 延迟降 20%; GET_STATUS 走遥测缓存不占总线, 提速不影响状态查询帧率)",
+          "BT 误差驱动速度的从臂实际位置读 (0924CJ: 改走遥测缓存, 120ms 窗内取最近一次成功采样, 0 总线事务; 出窗才直读 2 试x4ms —— 旧版每帧最多12 次阻塞读(最坏 ~48ms)砸在下发热路径上, 卡顿第二根源)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_13_0924CI": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CI (build_both_pp, 293744B, md5 7d3e6eca191693b0f7ed4572c25903a5, 归档 outputs/ARM-BOTH-0924CI_getstat.bin)",
+        "added": [
+          "fi hz <5~80> (0924CI: 跟随节拍旋钮, 默认 25ms=40Hz 不变 —— 切片化后无需降频; 现场可降到 15~20Hz 再让总线, 手感基本无感)"
+        ],
+        "modified": [
+          "GET_STATUS(0x02)/ArmApi_GetStatus (0924CI: 6 轴角度改走遥测缓存ArmMain_GetCachedJointDeg, <=100ms 新鲜度直接用, 不占舵机总线; 过期/丢读轴才回落直读+重试一次, read_ok 语义不变)",
+          "遥测采样器 FeedbackSampleService (0924CI: 常开 + 节拍 20->10ms, 全表刷新 120->60ms, 总线占用 ~7%)",
+          "fi 跟随循环 (0924CI: 切片状态机 —— 每次主循环调用只做 1 次总线事务(1 轴 1 次尝试), 帧截止 14ms 放弃计 lost; 旧版单帧最长 ~240ms 阻塞主循环是 GET_STATUS p50 19.7->36.5ms/p95 68ms 的根因; fi 不降速)",
+          "fi stat/diag (加 GET_STATUS 缓存 hit/miss 统计与节拍显示)",
+          "fi_read_master_jdeg 换算提取 fi_conv_master_jdeg 共用 (切片每轴成功后换算)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_13_0924CH": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CH (build_both_pp, 292908B, md5 57e97712bb62f619289edbda702ae1c9, 归档 outputs/ARM-BOTH-0924CH_calibx.bin)",
+        "added": [],
+        "modified": [
+          "c 校准向导 (0924CH: Phase 1→Phase 2 切换键 n/N 改 x/X —— 避免与顶层 n=总线扫描口诀混淆; 向导是阻塞式实际不冲突, 纯防误记; 入口提示/Phase1 按键行/渲染行同步改 x; p 仍为退回 Phase 1)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_13_0924CG": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CG (build_both_pp, 292916B, md5 b5119ffa2a7188138a1d3caf6030a7d8, 归档 outputs/ARM-BOTH-0924CG_phere.bin)",
+        "added": [
+          "P here (0924CG: 折叠位/休息位实测标定 —— 以当前实际位姿为新的 P 0 目标; P 0 / RC CIR 折叠键 / 折叠位白名单 fk_is_home_dock ±3° / 桌面下限推导全部跟随; 存区F v3 fold_j[6] relhome 关节角, 重启保留; 零点重校后 P 0 自动随新零点重算)",
+          "P clear / P def (撤销标定, 回编译默认 POSE_HOME_J)",
+          "区F 记录 v3 (60B: 前28B 与 v2 逐字节兼容, +fold_j[6]+fold_valid+sum2; 旧 v2 固件读 v3 记录仍过 v2 校验 —— 双向兼容)"
+        ],
+        "modified": [
+          "P 命令 (syntax 加 here/clear; ⚠ here/clear 必须在 atoi 之前拦截, 否则 atoi(\"here\")=0 会误触发 P 0 运动)",
+          "POSE_HOME 改运行时数组 pose_home_j_rt (懒初始化自 POSE_HOME_J; 开机区F 恢复标定后置 rt_init 防覆盖)",
+          "C dx dy dz 落盘 (v1 包装 GeoCfg_Save 改 Save2: 修复旧包装强写 zf_on=1 且会抹掉 P here 标定的隐患; fold 字段由 geo_cfg 缓存, 所有旧包装写区均不抹标定)",
+          "h 帮助 (P 段 + here/clear 用法; fix 清单 +ph-cal; NET 构建一处 418B 超长 cprint 字面量拆分 —— 2026-09-21 截断隐患)"
+        ],
+        "removed": []
+      },
+      "_changelog_2026_11_10_0924CE": {
+        "_legend": "★新增 / 【修改】/ ✗删除 —— 标注同步写在各命令的 notes 里, 本块是当日汇总",
+        "firmware": "ARM-BOTH-0924CE (build_both_pp, 290396B, md5 60ad749a6307375324dd0a67b2fd25dd); ARM-NET-0924CE (build_net_pp, 286236B, md5 18905355d0cc3dc6e1639439b370ca8c)",
+        "added": [
+          "link auto (0924CE: AUTO 双链路自动门控 —— 开机 CAN+NET 都初始化都在监听; 合法包(CRC 过)授 active 并刷新时间戳, 5s(LINK_AUTO_TIMEOUT_MS) 无包自动静默(仍监听, 0x280 心跳停); 合法包到达即敲门+直接执行不吞首包; auto 必须显式 link save 才启用, 默认仍全关; 手动 can/net/off 行为不变)",
+          "h/link 横幅新增 link auto 用法与静默说明"
+        ],
+        "modified": [
+          "link (0924CE: syntax 加 auto; `link` 状态页显示 [auto 动态: 静默=off])",
+          "链路引脚分配判据 (gpio.c PC4/PC5 与 UART4 PA0/PA1 改按 BootNetPins() 判 —— auto 下 RMII 让位恒成立; 旧 LINK_IS_NET() 判据在 auto 开机时会错配引脚掐死网口)",
+          "LED_R/G 与 0x280 心跳 (改按 NetHwInited()/AutoEnabled 判; auto 静默期心跳停推)",
+          "nx 门控 (改 NetHwInited() 判, auto 静默期 nx 仍有意义)",
+          "_firmware_tag 快照 (0924BF→CE: 此前一直漏更, 本次对齐)"
+        ],
+        "removed": []
+      },
+      "_fields_of_each_command": {
+        "name": "命令字(唯一标识)",
+        "syntax": "完整写法, [] 内为可选参数",
+        "group": "所属分组",
+        "terminator": "行尾(每条命令都必须带)",
+        "help": "一句话用途",
+        "notes": "详细说明: 默认值/范围/注意/关联命令"
+      },
+      "_letter_meanings": {
+        "n": "scan 扫描总线",
+        "Z": "全范围 ID 扫描 1..253(诊断)",
+        "b": "bus 总线模式",
+        "i": "init 初始化舵机",
+        "s": "status 状态",
+        "c": "calibrate 校准(交互式)",
+        "M": "中位(全轴推到 raw 2048)",
+        "F": "Flash 保存",
+        "X": "恢复固件默认(RAM)",
+        "t": "torque 扭矩",
+        "a": "angle 角度",
+        "r": "raw 原始值",
+        "p": "position 读位置",
+        "pv": "p + velocity 周期打印角度",
+        "pf": "p + frame 周期打印位姿",
+        "tm": "telemetry 遥测",
+        "z": "zero 回零",
+        "w": "wobble 单轴扫描",
+        "m": "move 六关节运动",
+        "q": "queue 路点队列",
+        "QL": "q + Loop 循环并在每点测量",
+        "QLC": "QL + Continuous 连续循环",
+        "B": "between 两点往返",
+        "BG": "B + Goto 笛卡尔两点往返",
+        "P": "pose 预设姿态",
+        "W": "wave 挥手",
+        "S": "stop 停止",
+        "teach": "示教",
+        "save/list/play/del/compact/rec": "示教文件管理",
+        "T": "temperature 温度",
+        "O": "load 负载",
+        "E": "error 硬件错误位",
+        "U": "寄存器诊断",
+        "f": "forward kinematics 正解",
+        "g": "goto 逆解移动",
+        "C": "世界坐标偏移",
+        "L": "limit 关节限位",
+        "G": "gravity 前馈/自适应状态",
+        "K": "Kp=P 增益",
+        "I": "I 增益",
+        "D": "D 增益",
+        "N": "设置完整 P/I/D",
+        "Y": "烧写舵机 EEPROM",
+        "V": "velocity 舵机内部速度",
+        "A": "adaptive 自适应校正",
+        "R": "reset 复位",
+        "LP": "list params",
+        "SP": "set params",
+        "LL": "log level",
+        "d": "diagnostic",
+        "e": "CAN loopback",
+        "h": "help",
+        "H": "完整清单(规划中)",
+        "link": "链路偏好(CAN/网口/关) 落 Flash 区C",
+        "ec": "echo 开关(静音)",
+        "ms": "master/slave 逻辑角快照",
+        "lk": "link 主从链路诊断",
+        "mf": "master forwarding",
+        "ma": "master active",
+        "sf": "slave follow",
+        "sp": "stream positions(PC 中转输出)",
+        "#P": "PC 中转位置行(输入)",
+        "ml/mg/mp/mo": "主臂 PA0/PA1 自检: 回环/GPIO/引脚探/输出保持",
+        "ct/cn/can": "CAN 计数自检/状态/从站配置",
+        "cx/cp/cy/cz/cw/ps": "CAN 接口切换/引脚探/总线监听/发侧探/外环探/引脚嗅探",
+        "nx/np/nm/nt": "网口: 状态/引脚/MIIM/REF_CLK 时钟体检",
+        "rc": "RC 接收机输入捕获(只读)",
+        "zi": "零点 & IK 限位状态",
+        "zr": "零点复位"
+      },
+      "_token_meanings": {
+        "J": "关节号: 单轴命令 0~5; PID/自适应命令 1~6",
+        "deg": "角度(度)",
+        "raw": "原始位置 0~4095",
+        "ms": "毫秒",
+        "v": "速度 deg/s",
+        "n": "路点/段索引 1~8",
+        "r": "轮次, 0=无限",
+        "x y z": "世界坐标 mm",
+        "pitch": "末端俯仰角 deg",
+        "name": "示教文件名(<=11 字符 A-Za-z0-9_-)",
+        "#": "序号(1 起)"
+      },
+      "_excluded": "本表是**文本控制台**命令。网口二进制 38 条命令见 network_protocol 一节(其中 TEXT_EXEC 可下发本表 124 条里的 113 条); CAN 二进制同 protocol 但走 0x100+node。"
+    },
+    "commands": [
+      {
+        "name": "n",
+        "syntax": "[n]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Scan Bus A(1~3) & Bus B(4~6)",
+        "notes": "开机自检; 正常报 6/6"
+      },
+      {
+        "name": "Z",
+        "syntax": "[Z]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Full ID scan 1..253 (diagnostic)",
+        "notes": "慢, 仅诊断"
+      },
+      {
+        "name": "b",
+        "syntax": "[b 0|1|2]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Bus mode 0=normal 1=all A 2=all B",
+        "notes": "调试用"
+      },
+      {
+        "name": "i",
+        "syntax": "[i]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Init all 6 joints (Torque OFF->RESET->position mode)",
+        "notes": "会重写 PID/限位/中位; 谨慎, 托住臂"
+      },
+      {
+        "name": "i J",
+        "syntax": "[i J]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Init single joint J=0~5",
+        "notes": "J 越界报错"
+      },
+      {
+        "name": "s",
+        "syntax": "[s]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Status all 6 joints (raw/pos/load/temp/error)",
+        "notes": "上位机常用"
+      },
+      {
+        "name": "c",
+        "syntax": "[c]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Interactive joint-limit & zero calibration",
+        "notes": "阻塞式, 按 q 退出; 重启生效"
+      },
+      {
+        "name": "M a",
+        "syntax": "[M a]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "One-key center (all 6 -> raw 2048)",
+        "notes": "仅已校准时安全"
+      },
+      {
+        "name": "M J",
+        "syntax": "[M J]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Center single joint J=0~5",
+        "notes": ""
+      },
+      {
+        "name": "F",
+        "syntax": "[F]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Save PID/correction/speed/params to Flash Sector 11",
+        "notes": "勿频繁; 每次擦整扇区"
+      },
+      {
+        "name": "X",
+        "syntax": "[X]",
+        "group": "Scan/Config",
+        "terminator": "\\r\\n",
+        "help": "Restore firmware-default PID to RAM + servo RAM",
+        "notes": "不擦 Flash, 不擦舵机 EEPROM"
+      },
+      {
+        "name": "t J 0/1",
+        "syntax": "[t J 0|1]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Single joint torque off/on",
+        "notes": "【修改 0924CA】J 是 0-based 轴号 0~5 (敲字母 J 会被 atoi 成 0 ⇒ 只松 J1); 不存盘"
+      },
+      {
+        "name": "t 6 0/1",
+        "syntax": "[t 6 0|1]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Torque off/on ALL 6 joints",
+        "notes": "★新增 0924CA; 一条命令全松/全紧; 上电/遥操前后用"
+      },
+      {
+        "name": "a J deg",
+        "syntax": "[a J deg]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Single joint move angle (SERVO deg 0~360)",
+        "notes": "舵机度, 不是关节角! 按 raw 限位钳制并打印 'J%d: x -> y deg'; 单轴直写, 不走轨迹规划"
+      },
+      {
+        "name": "r J raw",
+        "syntax": "[r J raw]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Single joint write raw 0~4095",
+        "notes": "调试用; 受 raw 限位钳制"
+      },
+      {
+        "name": "p J",
+        "syntax": "[p J]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Read single joint position",
+        "notes": "返回 raw / servo deg / rel-home 关节角"
+      },
+      {
+        "name": "pv ms",
+        "syntax": "[pv ms]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Live 6-joint angle streaming; pv 0 stops",
+        "notes": "ms=10~60000; 只读缓存"
+      },
+      {
+        "name": "pf ms",
+        "syntax": "[pf ms]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Live FK pose streaming; pf 0 stops",
+        "notes": "只读缓存"
+      },
+      {
+        "name": "tm ms [f]",
+        "syntax": "[tm ms ptivsl]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Telemetry pos/temp/current/volt/speed/load; 0 stops",
+        "notes": "运动建议 >=100ms; 字段 p t i v s l a; ★补 2026-11-05: 字段开关 p角度/t温度/i电流/v电压(=u)/s速度/l负载/a全部, 大小写不限"
+      },
+      {
+        "name": "z J",
+        "syntax": "[z J]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Home one joint (to center)",
+        "notes": "用校准 zero"
+      },
+      {
+        "name": "z a",
+        "syntax": "[z a]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Home all 6 joints",
+        "notes": ""
+      },
+      {
+        "name": "w J",
+        "syntax": "[w J]",
+        "group": "Single",
+        "terminator": "\\r\\n",
+        "help": "Single joint sweep test",
+        "notes": "诊断用"
+      },
+      {
+        "name": "m",
+        "syntax": "[m a1 a2 a3 a4 a5 a6 [v]]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "6-joint move (SERVO deg)",
+        "notes": "舵机度, 不是关节角! 数值硬钳 0~300(超 300 静默变 300, 不报错); v 缺省为 ARM_SC_DEF_VMAX=25 deg/s(固件帮助文本误写 30); 必须给满 6 个角度"
+      },
+      {
+        "name": "B",
+        "syntax": "[B a1..a6 b1..b6 rounds [v]]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "Joint A/B loop (SERVO deg)",
+        "notes": "1 轮 = A->B->A(起手先到 A); 舵机度; rounds=0 无限, >1000 钳到 1000; v 缺省 30, 钳 5~300"
+      },
+      {
+        "name": "BG",
+        "syntax": "[BG x1 y1 z1 p1 x2 y2 z2 p2 rounds [v]]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "Cartesian A/B loop via IK; rounds=0 infinite",
+        "notes": "XYZ mm + pitch deg"
+      },
+      {
+        "name": "q",
+        "syntax": "[q n j1 j2 j3 j4 j5 j6]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Save waypoint n=1~8 (SERVO deg)",
+        "notes": "舵机度, 不是关节角! 按 raw 限位钳制; 同时影响 QL/QLC"
+      },
+      {
+        "name": "qg",
+        "syntax": "[qg n X Y Z [pitch_deg]]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Save XYZ waypoint via IK n=1~8",
+        "notes": "IK 失败不覆盖原点"
+      },
+      {
+        "name": "qv",
+        "syntax": "[qv n v]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Set segment n speed (5~300 deg/s)",
+        "notes": "小写 qv 亦可"
+      },
+      {
+        "name": "qd",
+        "syntax": "[qd n ms]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Set point n dwell time (0~60000 ms)",
+        "notes": "到点稳定后才驻留; 小写 qd 亦可"
+      },
+      {
+        "name": "QL",
+        "syntax": "[QL n r [v]]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "Multi-point loop with per-point measure; r=0 inf",
+        "notes": "每点必等 500ms 稳定->采样->驻留"
+      },
+      {
+        "name": "QLC",
+        "syntax": "[QLC n r [v]]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "Multi-point continuous loop (no stop)",
+        "notes": "段间不停顿/不测量/不驻留"
+      },
+      {
+        "name": "P",
+        "syntax": "[P 0~4] | [P here] | [P clear]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Predefined pose 0=HOME 1=FOLD 2=READY 3=WAVE1 4=WAVE2; here/clear = 折叠位标定",
+        "notes": "【新增 0924CG】P here = 把当前实际位姿标定为折叠位(休息位): P 0 / RC CIR 折叠键 / 折叠位白名单(±3°) / 桌面下限推导全部跟随, 区F v3 存 flash 重启保留; P clear = 撤销标定回编译默认; 【修改 0924CK】P here 加逐轴标定限位校验, 超限拒存(手折时力矩 OFF 限位不生效, 超限位姿存进去 P 0 必挂 NO safe segment plan); ⚠ 0~4 运动前先 S 停回放, P here 不动臂只记录"
+      },
+      {
+        "name": "W",
+        "syntax": "[W n]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Swing WAVE1<->WAVE2 n times (default 3)",
+        "notes": "期间其它命令禁用直到 S"
+      },
+      {
+        "name": "S",
+        "syntax": "[S]",
+        "group": "Motion",
+        "terminator": "\\r\\n",
+        "help": "Stop trajectory / abort playback / cancel loops",
+        "notes": "通用停止"
+      },
+      {
+        "name": "teach",
+        "syntax": "[teach]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Enter float teach (drag & auto-record)",
+        "notes": "混合模式: J2/J3/J4 力控托举 + J1/J5/J6 真 free"
+      },
+      {
+        "name": "teach free",
+        "syntax": "[teach free]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Enter free teach (torque all off)",
+        "notes": ""
+      },
+      {
+        "name": "teach exit",
+        "syntax": "[teach exit]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Stop record, restore full torque/speed/PID",
+        "notes": ""
+      },
+      {
+        "name": "teach lock",
+        "syntax": "[teach lock]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Lock current pose (record continues)",
+        "notes": ""
+      },
+      {
+        "name": "teach p",
+        "syntax": "[teach p [P [I [D]]]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set soft-follow PID (0~254)",
+        "notes": "P 越小越软"
+      },
+      {
+        "name": "teach i",
+        "syntax": "[teach i [gain]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set gravity-balance integral gain (0~20)",
+        "notes": "0=关"
+      },
+      {
+        "name": "teach g",
+        "syntax": "[teach g [J] [gain]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set PWM gravity gain (0~100)",
+        "notes": "J2/J3/J4 默认 6; x0.1 duty/mm"
+      },
+      {
+        "name": "teach v",
+        "syntax": "[teach v [J] [damp]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set PWM velocity damping (0~20)",
+        "notes": "摆动/发飘就加大"
+      },
+      {
+        "name": "teach c",
+        "syntax": "[teach c [J] [duty]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set Coulomb friction comp (0~300)",
+        "notes": "拖动重就加大"
+      },
+      {
+        "name": "teach d",
+        "syntax": "[teach d [J] [duty]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set stiction dither (0~100)",
+        "notes": "低速卡顿就加大"
+      },
+      {
+        "name": "teach o",
+        "syntax": "[teach o [J] [val]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set const offset duty (-200~200)",
+        "notes": "J5/J6 下坠专用"
+      },
+      {
+        "name": "teach cap",
+        "syntax": "[teach cap [J] [val]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set per-joint duty cap (10~1000)",
+        "notes": "J3 默认 40"
+      },
+      {
+        "name": "teach f",
+        "syntax": "[teach f [J]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Flip PWM gravity direction",
+        "notes": ""
+      },
+      {
+        "name": "teach b",
+        "syntax": "[teach b [val]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set deadband avoid (0~100)",
+        "notes": "默认 20"
+      },
+      {
+        "name": "teach test",
+        "syntax": "[teach test [J]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show/set single-axis test mode (0|1~6)",
+        "notes": "单轴标定"
+      },
+      {
+        "name": "teach pwm",
+        "syntax": "[teach pwm]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "PWM zero-force mode status/entry",
+        "notes": "PWM 零力托举"
+      },
+      {
+        "name": "teach rec",
+        "syntax": "[teach rec]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Start follow-recording (read-only, servos untouched)",
+        "notes": "★PC 中转遥操时录从臂轨迹用; 只读不碰舵机, 不松力矩"
+      },
+      {
+        "name": "teach dump",
+        "syntax": "[teach dump]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Print all PWM zero-force params",
+        "notes": "标定完发回固化"
+      },
+      {
+        "name": "save",
+        "syntax": "[save [name]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Save unsaved recording to Flash",
+        "notes": "<=11 字符 A-Za-z0-9_-"
+      },
+      {
+        "name": "list",
+        "syntax": "[list]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "List saved recordings",
+        "notes": "等同 files"
+      },
+      {
+        "name": "play",
+        "syntax": "[play [name|#] [loop]]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Replay unsaved or saved recording",
+        "notes": "'loop' 可放任意位置"
+      },
+      {
+        "name": "del",
+        "syntax": "[del <name|#>]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Delete saved recording (tombstone)",
+        "notes": "用 compact 回收空间"
+      },
+      {
+        "name": "compact",
+        "syntax": "[compact]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Reclaim tombstone space",
+        "notes": "数秒; 期间 CPU 冻结"
+      },
+      {
+        "name": "rec clear",
+        "syntax": "[rec clear]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Discard unsaved recording",
+        "notes": ""
+      },
+      {
+        "name": "rec list",
+        "syntax": "[rec list]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "Show unsaved recording summary",
+        "notes": ""
+      },
+      {
+        "name": "T",
+        "syntax": "[T] / [T J]",
+        "group": "Monitor",
+        "terminator": "\\r\\n",
+        "help": "Temperature (degC)",
+        "notes": "J=0~5"
+      },
+      {
+        "name": "O",
+        "syntax": "[O] / [O J]",
+        "group": "Monitor",
+        "terminator": "\\r\\n",
+        "help": "Load (signed 0~1023)",
+        "notes": "看堵转/夹紧"
+      },
+      {
+        "name": "E",
+        "syntax": "[E] / [E J]",
+        "group": "Monitor",
+        "terminator": "\\r\\n",
+        "help": "Hardware error bitfield (0=OK)",
+        "notes": "bit3=过载最常见"
+      },
+      {
+        "name": "U",
+        "syntax": "[U ...]",
+        "group": "Monitor",
+        "terminator": "\\r\\n",
+        "help": "Low-level register read/write diagnostic",
+        "notes": "高级调试"
+      },
+      {
+        "name": "f",
+        "syntax": "[f]",
+        "group": "Kin",
+        "terminator": "\\r\\n",
+        "help": "Forward kinematics: show end pose",
+        "notes": "XYZ + pitch + raw"
+      },
+      {
+        "name": "g",
+        "syntax": "[g x y z [pitch_deg]]",
+        "group": "Kin",
+        "terminator": "\\r\\n",
+        "help": "Move to XYZ via IK (mm)",
+        "notes": "pitch 缺省 0(0=上 90=前 180=下)"
+      },
+      {
+        "name": "C",
+        "syntax": "[C]",
+        "group": "Kin",
+        "terminator": "\\r\\n",
+        "help": "Show world offset",
+        "notes": ""
+      },
+      {
+        "name": "C dx dy dz",
+        "syntax": "[C dx dy dz]",
+        "group": "Kin",
+        "terminator": "\\r\\n",
+        "help": "Set world offset (mm); RAM only",
+        "notes": "需 F 存盘"
+      },
+      {
+        "name": "L",
+        "syntax": "[L]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "Show joint limits",
+        "notes": ""
+      },
+      {
+        "name": "L J min max",
+        "syntax": "[L J min max]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "Set runtime joint limit (SERVO deg)",
+        "notes": "【修改 0924BY】设值即写 flash 区 I(0x8000), 重启自动恢复(手动值>校准值>编译默认); J=0~5; 舵机度; min<0->0, max>360->360; min>=max 才报错; 不支持跨 0/360 区间(用 'c' 校准)"
+      },
+      {
+        "name": "L clear",
+        "syntax": "[L clear]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "撤销 L 手动限位, 回校准/编译默认",
+        "notes": "★新增 0924BY; 区 I 写无效记录"
+      },
+      {
+        "name": "K",
+        "syntax": "[K] / [K J] / [K J val]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Show/set P-Gain (0~254)",
+        "notes": "立即写舵机 RAM"
+      },
+      {
+        "name": "I",
+        "syntax": "[I] / [I J] / [I J val]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Show/set I-Gain (0~254)",
+        "notes": "立即写舵机 RAM"
+      },
+      {
+        "name": "D",
+        "syntax": "[D] / [D J] / [D J val]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Show/set D-Gain (0~254)",
+        "notes": "立即写舵机 RAM"
+      },
+      {
+        "name": "N",
+        "syntax": "[N J] / [N J P I D]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Show/set complete PID for joint J",
+        "notes": "会同时显示缓存 vs 舵机 EEPROM"
+      },
+      {
+        "name": "Y",
+        "syntax": "[Y J]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Burn cached PID into servo EEPROM (0=all)",
+        "notes": "失力 ~0.6s, 托住臂"
+      },
+      {
+        "name": "V",
+        "syntax": "[V] / [V value]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Show/set all-servo internal speed (0~4095)",
+        "notes": "0=不限速"
+      },
+      {
+        "name": "A",
+        "syntax": "[A] / [A e 0|1] / [A t val] / [A r val] / [A g J v]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Adaptive correction config",
+        "notes": "阈值/轮次/增益"
+      },
+      {
+        "name": "G",
+        "syntax": "[G] / [G k]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Show/set gravity feedforward K (deg/mm)",
+        "notes": "现仅示教用"
+      },
+      {
+        "name": "R",
+        "syntax": "[R] / [R 1]",
+        "group": "PID",
+        "terminator": "\\r\\n",
+        "help": "Reset adaptive state / reboot ALL servos",
+        "notes": "R 1 广播 RESET"
+      },
+      {
+        "name": "LP",
+        "syntax": "[LP]",
+        "group": "Params",
+        "terminator": "\\r\\n",
+        "help": "List all algo params (id/name/value/range/unit)",
+        "notes": ""
+      },
+      {
+        "name": "SP",
+        "syntax": "[SP id v]",
+        "group": "Params",
+        "terminator": "\\r\\n",
+        "help": "Set one runtime param by id",
+        "notes": "只改 RAM, 需 F 存盘"
+      },
+      {
+        "name": "LL",
+        "syntax": "[LL] / [LL 0~4]",
+        "group": "RunLog",
+        "terminator": "\\r\\n",
+        "help": "Show/set runlog level",
+        "notes": "0=off..4=debug"
+      },
+      {
+        "name": "d",
+        "syntax": "[d]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "Diagnostics (CAN bus)",
+        "notes": ""
+      },
+      {
+        "name": "e",
+        "syntax": "[e]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "CAN loopback self-test",
+        "notes": ""
+      },
+      {
+        "name": "h",
+        "syntax": "[h]",
+        "group": "Help",
+        "terminator": "\\r\\n",
+        "help": "Runtime grouped help",
+        "notes": ""
+      },
+      {
+        "name": "H",
+        "syntax": "[H]",
+        "group": "Help",
+        "terminator": "\\r\\n",
+        "help": "(planned) Dump full command registry",
+        "notes": ""
+      },
+      {
+        "name": "ec",
+        "syntax": "[ec 0|1]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "Console echo off/on (quiet mode)",
+        "notes": "ec 0=静音; 从臂 PC 中转必开, 否则回显抢发送线"
+      },
+      {
+        "name": "ms",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】Joint-angle snapshot (both roles) + master TX counters",
+        "notes": "✗停用 2026-11-05: 板间遥操已由 fi 取代; 看角度用 fi 2(双臂监视)/pv/pf"
+      },
+      {
+        "name": "lk",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】Master-slave link status (UART4 PA0/PA1)",
+        "notes": "✗停用 2026-11-05: UART4 板间链路随板间遥操弃用; fi 板内遥操不经过 UART4"
+      },
+      {
+        "name": "mf",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】Master forwarding on/off (pause the link)",
+        "notes": "✗停用 2026-11-05: 板间遥操已由 fi 取代"
+      },
+      {
+        "name": "sp",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】Master console position stream (PC-relay output side)",
+        "notes": "✗停用 2026-11-05: PC 中转遥操已由 fi 取代"
+      },
+      {
+        "name": "#P",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】PC-relay position line receiver (slave side)",
+        "notes": "✗停用 2026-11-05: PC 中转遥操已由 fi 取代; 固件仍解析但上位机勿再发"
+      },
+      {
+        "name": "ml",
+        "syntax": "[ml N]",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "Master loopback self-test: send N frames, no servo reads",
+        "notes": "主臂专用; 默认 200; 舵机断电也能跑"
+      },
+      {
+        "name": "mg",
+        "syntax": "[mg]",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "Master GPIO-level loopback test (PA0<->PA1 jumper)",
+        "notes": "需跳线且拔链路; 连采 8 次打位图; ⚠ net 构建被拦(收尾写 PA0/PA1=AF8 会掐 REF_CLK)"
+      },
+      {
+        "name": "mp",
+        "syntax": "[mp [端口 引脚]]",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "Master pin DC probe (no jumper)",
+        "notes": "主臂专用; 默认 PA0/PA1 + 参考 PC10/PC11; ⚠ net 构建被拦(同上)"
+      },
+      {
+        "name": "mo",
+        "syntax": "[mo A 引脚 0|1] / [mo r]",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "Master pin hold (freeze a pin for DMM hunting)",
+        "notes": "mo r 释放回 UART4 AF8; 保持期间链路暂停; ⚠ net 构建被拦(同上)"
+      },
+      {
+        "name": "ma",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】Master active mode (1=torque ON + motion cmds; 0=passive drag)",
+        "notes": "✗停用 2026-11-05: 板间遥操已由 fi 取代; 力矩开关用 t 6 0|1"
+      },
+      {
+        "name": "sf",
+        "syntax": "(已停用)",
+        "group": "MasterSlave",
+        "terminator": "\\r\\n",
+        "help": "【已停用】Slave follow on/off (pause following the master)",
+        "notes": "✗停用 2026-11-05: 板间跟随已由 fi 取代; fi 开关 = fi 0|1"
+      },
+      {
+        "name": "can",
+        "syntax": "[can [node N|baud K|hb ms|save|reset|stat clr]]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN slave config: node id / bitrate / heartbeat",
+        "notes": "save 落 Flash 扇区11 CAN 区; 与 PID/链路区互不覆盖"
+      },
+      {
+        "name": "ct",
+        "syntax": "[ct [N]]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN link test: send N test frames / show rx count",
+        "notes": "两种角色通用; 两边数字对上即链路通"
+      },
+      {
+        "name": "cn",
+        "syntax": "[cn]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN status: hw init / counters / TEC REC LEC / raw regs / RX pin level",
+        "notes": "LEC 3=ACK 无人应答; 6=线上干扰"
+      },
+      {
+        "name": "cx",
+        "syntax": "[cx [1|2|pa|pb|save|reset]]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN interface switch: CAN1 <-> CAN2, runtime",
+        "notes": "cx 2 切 CAN2(PB12/PB13); cx pa/pb 换 CAN1 引脚对; cx save 落盘"
+      },
+      {
+        "name": "cp",
+        "syntax": "[cp]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN pin DC probe (RX pin pull-up/down + TX drive self-test)",
+        "notes": "无总线也能跑; 防'分不清没接还是没上电'"
+      },
+      {
+        "name": "cy",
+        "syntax": "[cy [窗口ms]]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN bus level watch: is any node transmitting?",
+        "notes": "默认 500ms; 全高=总线上毫无活动; ⚠ 主臂测前先 mf 0"
+      },
+      {
+        "name": "cz",
+        "syntax": "[cz [帧数]]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN TX-path probe: send N frames, watch the bus pulse",
+        "notes": "默认 20; 显性出现=模块在驱动差分对"
+      },
+      {
+        "name": "cw",
+        "syntax": "[cw [毫秒]]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN wire-loop test (TX->transceiver->bus->RXD->RX)",
+        "notes": "cp 的盲区补丁; 单节点自环可判; 显性时 RX=0 且隐性时 RX=1 => 外环通"
+      },
+      {
+        "name": "ps",
+        "syntax": "[ps]",
+        "group": "CAN",
+        "terminator": "\\r\\n",
+        "help": "CAN pin sniffer: which MCU pin carries the incoming CAN data",
+        "notes": "⚠ 必须在卡端持续灌帧的同时跑(tools/can_flood.py)"
+      },
+      {
+        "name": "nx",
+        "syntax": "[nx [cic 0|1|sent 0|1|hwck 0|1|scan]]",
+        "group": "Net",
+        "terminator": "\\r\\n",
+        "help": "NET status / debug ctl / scan",
+        "notes": "非网口链路时明确拒绝(不假装能看)"
+      },
+      {
+        "name": "np",
+        "syntax": "[np]",
+        "group": "Net",
+        "terminator": "\\r\\n",
+        "help": "NET pin probe (read-only forensic)",
+        "notes": "RMII_sel / MACMIIAR / AFR / 引脚电平"
+      },
+      {
+        "name": "nm",
+        "syntax": "[nm]",
+        "group": "Net",
+        "terminator": "\\r\\n",
+        "help": "MIIM soft probe (MDIO line health)",
+        "notes": "软 MIIM + MDIO 线体检"
+      },
+      {
+        "name": "nt",
+        "syntax": "[nt]",
+        "group": "Net",
+        "terminator": "\\r\\n",
+        "help": "REF_CLK clock probe (TIM2FP2/TI2FP2 + TIM5 + DWT)",
+        "notes": "⚠ 会抢 TIM5; 用完要 `rc reinit` 或 RESET"
+      },
+      {
+        "name": "rc",
+        "syntax": "[rc [reset|reinit|mid|raw|watch]]",
+        "group": "RC",
+        "terminator": "\\r\\n",
+        "help": "RC receiver input capture (read-only) + mid capture",
+        "notes": "rc mid 采中位; rc reinit 抢回 TIM4(nt 之后必须); rc watch 实时看"
+      },
+      {
+        "name": "zi",
+        "syntax": "[zi]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "Zero / IK-limit status (calib_zero_raw, SERVO_OFFSET, raw limits)",
+        "notes": "★排障必看; 健康值: 未校准全 0, 已校准接近 2048×6"
+      },
+      {
+        "name": "zr",
+        "syntax": "[zr [save]]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "Reset Home zero to factory center (SERVO_OFFSET=180)",
+        "notes": "加 save 写 Flash; 修复被示教模式误触 '0' 污染的零点"
+      },
+      {
+        "name": "link",
+        "syntax": "[link [can|net|off|auto|save]]",
+        "group": "Link",
+        "terminator": "\\r\\n",
+        "help": "Runtime link preference: CAN / network / off / AUTO dual-listen",
+        "notes": "【修改 0924CF】auto=开机 CAN+NET 都初始化都监听, 谁发合法包(CRC过)谁 active, 5s 无包自动静默(仍监听, 0x280 心跳停); ⭐0924CF 起未配置默认=auto(开机/复位即双监听, 拔线自动回监听态, 免人工切换)——覆盖 2026-09-22 全关旧规; 显式关走 link off+save; 改偏好 -> link save 落盘 -> rb 生效(手动模式)"
+      },
+      {
+        "name": "fi",
+        "syntax": "[fi 0|1|2] [fi hz <5~80>]",
+        "group": "Teleop",
+        "terminator": "\\r\\n",
+        "help": "板内遥操: 0=off 1=跟随 2=双臂角度监视(只读)",
+        "notes": "★新增 0924BK; fi 1=读主臂 Bus A ID7~12 -> 下发从臂 Bus B; 【修改 0924BT】误差驱动速度(实测→目标距离÷dt)+启动逐轴力矩校验; fi 2 每 300ms 打 M/S 两行; 【修改 0924CI】跟随帧切片分时(每调用1次总线事务)+fi hz 调速; 【修改 0924CJ】部分帧降级下发(丢读轴沿用上次值不再弃帧, 卡顿根治)+默认节拍 20ms=50Hz"
+      },
+      {
+        "name": "fi diag",
+        "syntax": "[fi diag]",
+        "group": "Teleop",
+        "terminator": "\\r\\n",
+        "help": "遥操一屏判别快照",
+        "notes": "★新增 0924BT; 力矩 ON/OFF/主臂读数/夹后目标/从臂实际/err/spd/frames/rej/lost/clamp cnt/主臂零点 raw; 从臂不动先敲它"
+      },
+      {
+        "name": "fi spd",
+        "syntax": "[fi spd 0|1]",
+        "group": "Teleop",
+        "terminator": "\\r\\n",
+        "help": "比例跟随(速度直传)开关",
+        "notes": "★新增 0924BP; 1=速度按误差÷dt 计算, 0=固定速度"
+      },
+      {
+        "name": "fi acc",
+        "syntax": "[fi acc [0~254]]",
+        "group": "Teleop",
+        "terminator": "\\r\\n",
+        "help": "跟随轴加速度寄存器(addr41)查看/设置",
+        "notes": "★新增 0924BQ; fi 1 启动时写 254(满加速)"
+      },
+      {
+        "name": "fi margin",
+        "syntax": "(已删除)",
+        "group": "Teleop",
+        "terminator": "\\r\\n",
+        "help": "边界安全带(0924BS) —— 0924BZ 整体移除",
+        "notes": "✗删除 0924BZ; 用户明令遥操只受限位约束; 顶死风险靠 [STALL] 告警兜底"
+      },
+      {
+        "name": "zf here",
+        "syntax": "[zf here]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "桌面下限实测标定: 爪尖摆到目标高度后敲",
+        "notes": "★新增 0924BW; 以当前实际位姿 FK z 为下限(吸收 FK 模型 ~10mm 系统性偏差); 读从臂 6 轴实际, 失败提示重试; 存 flash 区 F; 顺带 zf on"
+      },
+      {
+        "name": "zf on/off",
+        "syntax": "[zf on|off]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "遥操/流控桌面限位开关",
+        "notes": "★新增 0924BV; 直通模式下唯一保留的桌面拦截(跳变/立柱/包线仍旁路); 存 flash 区 F"
+      },
+      {
+        "name": "zf clear",
+        "syntax": "[zf clear]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "撤销桌面标定, 回折叠位推导",
+        "notes": "★保留 0924BV (原 0924AS); 存 flash"
+      },
+      {
+        "name": "zf <mm>",
+        "syntax": "(已删除)",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "数字设桌面下限 —— 0924BX 移除",
+        "notes": "✗删除 0924BX; FK 模型偏差 ~10mm, 数字值对不上实际离桌距离(设 5 实停 15), 标定一律 zf here; 敲数字会提示已移除"
+      },
+      {
+        "name": "sid",
+        "syntax": "[sid [scan|ping|info|set|lock|reset|baud]]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "STS3215 改 ID 维护工具 (走总线 A 半双工)",
+        "notes": "★补录 2026-11-05(命令 2026-10-23 已在固件); 不带参数=用法帮助"
+      },
+      {
+        "name": "sid scan",
+        "syntax": "[sid scan]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "双总线逐 ID 探测, 找出舵机所在总线与当前 ID",
+        "notes": "★补录; 改 ID 前先扫"
+      },
+      {
+        "name": "sid set",
+        "syntax": "[sid set <old> <new>]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "改舵机 ID (old->new, 自动定位所在总线)",
+        "notes": "★补录; ID 1~253(254=广播保留); 流程 TorqueOFF->EEPROM 解锁->写 ID->RESET 生效->重新上锁->验证; 连续同败先 sid lock <id> 0; 在线关节改 ID 前想清楚(改完可能失联)"
+      },
+      {
+        "name": "sid ping",
+        "syntax": "[sid ping <id>]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "探活指定 ID 舵机",
+        "notes": "★补录"
+      },
+      {
+        "name": "sid info",
+        "syntax": "[sid info <id>]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "读指定 ID 舵机信息",
+        "notes": "★补录"
+      },
+      {
+        "name": "sid lock",
+        "syntax": "[sid lock <id> <0|1>]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "EEPROM 手动解锁(0)/上锁(1)",
+        "notes": "★补录; sid set 连续失败时先 lock <id> 0 再 set"
+      },
+      {
+        "name": "sid reset",
+        "syntax": "[sid reset <id>]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "舵机内部重启/清错误",
+        "notes": "★补录; 稍后 sid ping 验证"
+      },
+      {
+        "name": "sid baud",
+        "syntax": "[sid baud <id> <bps>]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "改单只舵机 EEPROM 波特率 (单只维修用)",
+        "notes": "★补录; ⚠ 铁律: 舵机总线波特率定格 1M 禁动, 本命令仅限单只舵机维修场景"
+      },
+      {
+        "name": "rb",
+        "syntax": "[rb]",
+        "group": "System",
+        "terminator": "\\r\\n",
+        "help": "软复位 (NVIC_SystemReset)",
+        "notes": "★新增 0924CC; 板上无 RESET 按键, link save/参数验证后的唯一重启口; 300ms 延迟让回显发完; 与网口 SYS_RESET 同一条延迟通路"
+      },
+      {
+        "name": "bootlog",
+        "syntax": "[bootlog on|off]",
+        "group": "Diag",
+        "terminator": "\\r\\n",
+        "help": "开机日志降噪开关 (0924AT, 默认 QUIET)",
+        "notes": "★补录; QUIET 只打横幅/[FAULT]/[STALL]/[BOOT]/扫描结果/警告; on=全套 Init 过程行(排查启动问题); RAM-only 下次开机回安静"
+      },
+      {
+        "name": "colj2",
+        "syntax": "[colj2 on|off]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "J2 壳体包线检查开关 (0924AU, 默认 ON)",
+        "notes": "★补录; 包线 0<=rho<51.05 且 z<131.38 mm(基座坐标, 现场实测+余量); RAM-only 不存 flash"
+      },
+      {
+        "name": "delete",
+        "syntax": "[delete <name>]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "删除示教文件 (del 的别名)",
+        "notes": "★补录; 同 del"
+      },
+      {
+        "name": "pV/pF",
+        "syntax": "[pV] / [pF]",
+        "group": "Monitor",
+        "terminator": "\\r\\n",
+        "help": "pv/pf 的大写别名",
+        "notes": "★补录; 同 pv(实时关节角)/pf(位姿), 大小写等价"
+      },
+      {
+        "name": "qV/qD/qG",
+        "syntax": "[qV seg spd] / [qD pt ms] / [qG x y z]",
+        "group": "Params",
+        "terminator": "\\r\\n",
+        "help": "qv/qd/qg 的大写别名",
+        "notes": "★补录; 同 qv(段速度)/qd(点驻留)/qg(XYZ 目标点)"
+      },
+      {
+        "name": "Q",
+        "syntax": "[Q]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "循环回放用法显示 (裸 Q 无动作, 打 QL/qv/qd 用法)",
+        "notes": "★补录 2026-11-05"
+      },
+      {
+        "name": "QV/Qv/QD/Qd",
+        "syntax": "[QV seg spd] / [QD pt ms]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "循环回放速度/驻留设置 (case 'Q' 入口)",
+        "notes": "★补录; 与 qv/qd 语义相同, 回放主命令是 QL"
+      },
+      {
+        "name": "QLc",
+        "syntax": "[QLc ...]",
+        "group": "Loop",
+        "terminator": "\\r\\n",
+        "help": "QL 的别名",
+        "notes": "★补录; 同 QL <count> <rounds> [speed]"
+      },
+      {
+        "name": "Lp/Ll",
+        "syntax": "[Lp] / [Ll]",
+        "group": "Safety",
+        "terminator": "\\r\\n",
+        "help": "LP/LL 的小写别名",
+        "notes": "★补录; 同 LP/LL"
+      },
+      {
+        "name": "Sp",
+        "syntax": "[Sp]",
+        "group": "Params",
+        "terminator": "\\r\\n",
+        "help": "SP 的别名",
+        "notes": "★补录; 同 SP"
+      },
+      {
+        "name": "files",
+        "syntax": "[files]",
+        "group": "Teach",
+        "terminator": "\\r\\n",
+        "help": "List saved recordings (alias of list)",
+        "notes": "等同 list"
+      }
+    ]
+  }
+}

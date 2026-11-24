@@ -1,0 +1,29 @@
+# ---- 编译产物（不入库）----
+build*/
+*.elf
+*.map
+*.list
+*.hex
+*.bin
+*.o
+*.a
+
+# ---- 运行输出与日志 ----
+outputs/
+logs/
+
+# ---- 压缩包（内容已在目录中，避免重复）----
+*.zip
+
+# ---- 便携 Python 环境（工具运行时依赖，非源码）----
+tools/py32/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ---- Windows 杂项 ----
+nul
+Thumbs.db
+desktop.ini

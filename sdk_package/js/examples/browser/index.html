@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arm-sdk-js · 浏览器直连机械臂（经 WebSocket 桥）</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #f6f7f9; color: #1f2328; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #656d76; margin-bottom: 18px; }
+  .card { background: #fff; border: 1px solid #d8dee4; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  input[type=text] { flex: 1 1 320px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font: inherit; }
+  button { padding: 7px 14px; border: 1px solid #d0d7de; background: #f6f8fa; border-radius: 6px;
+           font: inherit; cursor: pointer; }
+  button:hover { background: #eef1f4; }
+  button.primary { background: #1f883d; border-color: #1a7f37; color: #fff; }
+  button.primary:hover { background: #1a7f37; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .axis { border: 1px solid #d8dee4; border-radius: 8px; padding: 8px; text-align: center; }
+  .axis b { display: block; font-size: 12px; color: #656d76; margin-bottom: 4px; }
+  .axis .deg { font-size: 15px; font-variant-numeric: tabular-nums; }
+  pre { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 8px; overflow: auto;
+        max-height: 260px; font-size: 12px; margin: 0; }
+  .ok { color: #1a7f37; font-weight: 600; }
+  .bad { color: #cf222e; font-weight: 600; }
+  .hint { font-size: 12px; color: #656d76; }
+  code { background: #eff1f3; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<h1>arm-sdk-js · 浏览器直连</h1>
+<div class="sub">
+  浏览器发不了原始 UDP，所以要先起边车：<br>
+  <code>node src/bridge.js --target 192.168.7.120:5000</code>，再在下面连 <code>ws://127.0.0.1:8765/</code>
+</div>
+
+<div class="card">
+  <div class="row">
+    <input type="text" id="uri" value="ws://127.0.0.1:8765/">
+    <button class="primary" id="connect">连接</button>
+    <button id="disconnect" disabled>断开</button>
+    <button id="ping" disabled>PING</button>
+    <button id="status" disabled>读状态</button>
+  </div>
+  <div class="hint">
+    多台臂：把 URI 写成 <code>ws://127.0.0.1:8765/?target=192.168.7.121:5000</code>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row"><b style="margin-right:8px">当前舵机度</b><span id="conn" class="hint">未连接</span></div>
+  <div class="grid" id="axes"></div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <b style="margin-right:8px">点动（增量，绝不发绝对角）</b>
+    <label class="hint">步长 <input type="text" id="step" value="3" style="width:56px"></label>
+    <label class="hint">速度 <input type="text" id="speed" value="15" style="width:56px"> °/s</label>
+  </div>
+  <div class="grid" id="jog"></div>
+  <div class="hint" style="margin-top:8px">
+    ⚠ 目标是"当前角 + 步长"，因为 MOVE_JOINTS 超限会被固件<b>静默钳制</b>；err=0 不代表到位，必须回读。
+  </div>
+</div>
+
+<div class="card">
+  <div class="row"><b>日志</b><button id="clear" style="margin-left:auto">清空</button></div>
+  <pre id="log"></pre>
+</div>
+
+<script type="module">
+import { openArm } from '../../src/index.js';
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+function log(msg, cls = '') {
+  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  logEl.innerHTML += `<span class="${cls}">[${t}] ${msg}</span>\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* 关节格子 */
+const axes = $('axes'); const jog = $('jog');
+for (let j = 1; j <= 6; j++) {
+  axes.innerHTML += `<div class="axis"><b>J${j}</b><span class="deg" id="ax${j}">--</span></div>`;
+}
+for (let j = 1; j <= 6; j++) {
+  jog.innerHTML += `<div class="axis"><b>J${j}</b>
+    <button data-j="${j}" data-d="-1">−</button>
+    <button data-j="${j}" data-d="1">＋</button></div>`;
+}
+
+let arm = null;
+let last = null;
+
+function setEnabled(on) {
+  for (const id of ['disconnect', 'ping', 'status']) $(id).disabled = !on;
+  $('connect').disabled = on;
+}
+
+async function refresh() {
+  const st = await arm.getStatus();
+  if (!st) { log('GET_STATUS 无响应', 'bad'); return null; }
+  last = st.joints.slice();
+  for (let j = 0; j < 6; j++) {
+    const v = st.joints[j];
+    $(`ax${j + 1}`).textContent = v === null ? '读失败' : v.toFixed(1) + '°';
+  }
+  log(`状态 ${st.joints.map((v) => v === null ? '--' : v.toFixed(1)).join(', ')}  ` +
+      `read_ok=${st.read_ok}${st.estop ? '  🛑E-STOP' : ''}`);
+  if (st.failedJoints.length) log('读失败轴 J' + st.failedJoints.join(',J'), 'bad');
+  return st;
+}
+
+$('connect').onclick = async () => {
+  const uri = $('uri').value.trim();
+  try {
+    log('连接 ' + uri + ' …');
+    arm = await openArm(uri, { timeout: 0.5, verbose: false });
+    setEnabled(true);
+    $('conn').innerHTML = '<span class="ok">已连接 ' + arm.link + '</span>';
+    log('已连接：' + arm.link, 'ok');
+    const pi = await arm.ping();
+    if (pi) log(`PING proto_ver=${pi.proto_ver} run_id=${pi.run_id}  ${pi.latencyMs.toFixed(1)}ms`, 'ok');
+    else log('PING 无响应', 'bad');
+    await refresh();
+  } catch (e) {
+    log('连接失败：' + e.message, 'bad');
+    log('→ 边车起了吗？ node src/bridge.js --target <臂 IP>:5000', 'bad');
+  }
+};
+
+$('disconnect').onclick = async () => {
+  if (arm) { await arm.close(); log('已断开'); }
+  arm = null; setEnabled(false);
+  $('conn').textContent = '未连接';
+  for (let j = 1; j <= 6; j++) $(`ax${j}`).textContent = '--';
+};
+
+$('ping').onclick = async () => {
+  const t0 = performance.now();
+  const pi = await arm.ping();
+  const dt = performance.now() - t0;
+  log(pi ? `PING ok  ${dt.toFixed(1)}ms` : 'PING 无响应（查边车目标 / link 偏好 / 端口 5000）', pi ? 'ok' : 'bad');
+};
+
+$('status').onclick = () => refresh();
+$('clear').onclick = () => { logEl.textContent = ''; };
+
+jog.onclick = async (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn || !arm) return;
+  const j = Number(btn.dataset.j), d = Number(btn.dataset.d);
+  const step = Number($('step').value) || 0;
+  const speed = Number($('speed').value) || 15;
+  if (!last) { log('先读一次状态', 'bad'); return; }
+  const target = last.slice();
+  target[j - 1] += d * step;
+  const r = await arm.moveJoints(target, speed);
+  log(`J${j} ${d > 0 ? '+' : '−'}${step}° → 发 ${target.map((v) => v.toFixed(1)).join(',')}  ${r.toString()}`, r.ok ? '' : 'bad');
+  await new Promise((r2) => setTimeout(r2, 300));
+  await refresh();     // 回读确认（err=0 不代表到位）
+};
+
+log('就绪。先起边车，再点"连接"。');
+log('离线体验：把 URI 改成 sim:// 也能点，只是点动看不出物理位移。');
+</script>
+</body>
+</html>

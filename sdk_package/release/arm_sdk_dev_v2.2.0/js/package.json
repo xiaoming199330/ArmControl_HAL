@@ -1,0 +1,40 @@
+{
+  "name": "arm-sdk-js",
+  "version": "2.0.0",
+  "description": "六轴机械臂上位机 SDK（JS）— UDP 网口 / WebSocket 桥 / Web Serial / 离线模拟器，四承载一套协议",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./protocol": "./src/protocol.js",
+    "./transport": "./src/transport.js",
+    "./client": "./src/client.js",
+    "./teleop": "./src/teleop.js",
+    "./teach": "./src/teach.js",
+    "./kinematics": "./src/kinematics.js",
+    "./console": "./src/console.js",
+    "./sim": "./src/sim.js",
+    "./bridge": "./src/bridge.js"
+  },
+  "bin": {
+    "armctl-js": "./src/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "selftest": "node test/run_all.mjs",
+    "test": "node test/run_all.mjs"
+  },
+  "optionalDependencies": {},
+  "keywords": [
+    "robotics",
+    "arm",
+    "stm32",
+    "sts3215",
+    "udp",
+    "teleoperation"
+  ]
+}
